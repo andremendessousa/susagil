@@ -1,0 +1,45 @@
+{
+  "name": "SUS Raio-X Dev",
+  "image": "mcr.microsoft.com/devcontainers/universal:2",
+  "features": {
+    "ghcr.io/devcontainers/features/python:1": { "version": "3.11" },
+    "ghcr.io/devcontainers/features/node:1": { "version": "20" }
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "ms-python.black-formatter",
+        "dbaeumer.vscode-eslint",
+        "esbenp.prettier-vscode",
+        "bradlc.vscode-tailwindcss",
+        "dsznajder.es7-react-js-snippets",
+        "rangav.vscode-thunder-client",
+        "eamodio.gitlens",
+        "formulahendry.auto-rename-tag",
+        "PKief.material-icon-theme",
+        "christian-kohler.path-intellisense"
+      ],
+      "settings": {
+        "editor.formatOnSave": true,
+        "editor.defaultFormatter": "esbenp.prettier-vscode",
+        "editor.tabSize": 2,
+        "[python]": {
+          "editor.defaultFormatter": "ms-python.black-formatter"
+        },
+        "tailwindCSS.experimental.classRegex": [
+          ["cn\\(([^)]*)\\)", "'([^']*)'"]
+        ],
+        "emmet.includeLanguages": { "javascript": "javascriptreact" }
+      }
+    }
+  },
+  "forwardPorts": [5173, 8000],
+  "portsAttributes": {
+    "5173": { "label": "Frontend (Vite)", "onAutoForward": "openBrowser" },
+    "8000": { "label": "Backend (FastAPI)", "onAutoForward": "notify" }
+  },
+  "postCreateCommand": "cd frontend && npm install",
+  "remoteUser": "codespace"
+}
