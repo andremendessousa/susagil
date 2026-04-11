@@ -1,6 +1,8 @@
-import { Search, Filter, Loader } from 'lucide-react'
-import { useState } from 'react'
+import { Search, Filter, Loader, CheckCircle } from 'lucide-react'
+import { useState, useEffect } from 'react'
 import { useQueue } from '../hooks/useQueue'
+import NovoEncaminhamentoModal from '../components/NovoEncaminhamentoModal'
+import AgendarModal from '../components/AgendarModal'
 
 const prioStyle = {
   1: 'bg-red-100 text-red-800',
@@ -12,17 +14,49 @@ const prioStyle = {
 const corLabel = { vermelho: 'Emergência', amarelo: 'Urgência', verde: 'Prioridade', azul: 'Rotina' }
 
 export default function FilaPage() {
-  const { entries, loading } = useQueue()
+  const { entries, loading, refresh } = useQueue()
   const [busca, setBusca] = useState('')
+  const [modalOpen, setModalOpen] = useState(false)
+  const [agendarEntry, setAgendarEntry] = useState(null)
+  const [toast, setToast] = useState(null)
 
-  const filtrados = entries.filter(e =>
-    !busca || e.paciente_nome?.toLowerCase().includes(busca.toLowerCase()) ||
-    e.ubs_origem?.toLowerCase().includes(busca.toLowerCase()) ||
-    e.paciente_cns?.includes(busca)
-  )
+  useEffect(() => {
+    if (!toast) return
+    const t = setTimeout(() => setToast(null), 3500)
+    return () => clearTimeout(t)
+  }, [toast])
+
+  function handleSuccess() {
+    refresh()
+    setToast('Paciente adicionado à fila')
+  }
+
+  function handleAgendarSuccess() {
+    refresh()
+    setToast('Exame agendado com sucesso')
+  }
+
+  const filtrados = entries.filter(e => {
+    if (!busca) return true
+    const termo = busca.toLowerCase().trim()
+    return (
+      e.paciente_nome?.toLowerCase().includes(termo) ||
+      e.ubs_origem?.toLowerCase().includes(termo) ||
+      e.paciente_cns?.includes(termo) ||
+      e.municipio_paciente?.toLowerCase().includes(termo)
+    )
+  })
 
   return (
     <div className="space-y-5">
+      {/* Toast de sucesso */}
+      {toast && (
+        <div className="fixed bottom-6 right-6 z-50 flex items-center gap-2 bg-green-700 text-white
+                        px-4 py-3 rounded-xl shadow-lg text-sm font-medium animate-fade-in">
+          <CheckCircle size={16} />
+          {toast}
+        </div>
+      )}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-semibold text-gray-900">Fila de Exames</h1>
@@ -30,7 +64,7 @@ export default function FilaPage() {
             {loading ? 'Carregando...' : `${entries.length} pacientes · Raio-X convencional`}
           </p>
         </div>
-        <button className="btn-primary">+ Novo encaminhamento</button>
+        <button className="btn-primary" onClick={() => setModalOpen(true)}>+ Novo encaminhamento</button>
       </div>
 
       <div className="flex gap-3">
@@ -85,7 +119,13 @@ export default function FilaPage() {
                 </td>
                 <td className="px-5 py-3 text-gray-500 capitalize">{r.status_local}</td>
                 <td className="px-5 py-3">
-                  <button className="text-blue-700 text-xs font-medium hover:underline">Agendar</button>
+                  <button
+                    className="text-blue-700 text-xs font-medium hover:underline disabled:opacity-40 disabled:cursor-not-allowed"
+                    disabled={r.status_local === 'agendado'}
+                    onClick={() => setAgendarEntry(r)}
+                  >
+                    {r.status_local === 'agendado' ? 'Agendado' : 'Agendar'}
+                  </button>
                 </td>
               </tr>
             ))}
@@ -97,6 +137,18 @@ export default function FilaPage() {
           </tbody>
         </table>
       </div>
+
+      <NovoEncaminhamentoModal
+        isOpen={modalOpen}
+        onClose={() => setModalOpen(false)}
+        onSuccess={handleSuccess}
+      />
+      <AgendarModal
+        isOpen={!!agendarEntry}
+        onClose={() => setAgendarEntry(null)}
+        entry={agendarEntry}
+        onSuccess={handleAgendarSuccess}
+      />
     </div>
   )
 }

@@ -19,7 +19,12 @@ export function useQueue(filtroStatus = null) {
 
     const { data, error } = await query
     if (error) setError(error.message)
-    else setEntries(data || [])
+    else {
+      const uniqueEntries = (data || []).filter(
+        (entry, index, self) => index === self.findIndex(e => e.id === entry.id)
+      )
+      setEntries(uniqueEntries)
+    }
     setLoading(false)
   }
 
