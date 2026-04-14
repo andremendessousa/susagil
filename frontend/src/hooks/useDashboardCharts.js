@@ -1,137 +1,93 @@
 import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '../lib/supabase'
 
-function getDateISO(dias) {
-  const d = new Date()
-  d.setDate(d.getDate() - dias)
-  return d.toISOString()
-}
-
-function trunc(str, n = 20) {
-  if (!str) return '—'
-  return str.length > n ? str.slice(0, n) + '…' : str
-}
-
-export function useDashboardCharts() {
-  const [periodo, setPeriodo] = useState(30)
-  const [charts, setCharts] = useState({ A: [], B: [], C: [], D: [] })
+/**
+ * Busca dados para os gráficos do Dashboard e da AnaliseGerencialPage.
+ *
+ * @param {{ horizonte?: number, tipoAtendimento?: string|null }} params
+ * @returns {{ charts, loading, error, refresh }}
+ *
+ * charts = {
+ *   tendencia:              Array<{ dia, total, faltas, taxa, taxa_media_movel }>
+ *   por_local:              Array<{ equipamento_nome, unidade_nome, realizados, faltas, taxa_absenteismo }>
+ *   por_municipio:          Array<{ municipio, uf, total_encaminhamentos, ... }>
+ *   ocupacao_passada:       Array<{ equipamento_nome, unidade_nome, pct_ocupacao, ... }>
+ *   absenteismo_executante: Array<{ equipamento_nome, unidade_nome, taxa_absenteismo, meta_absenteismo, ... }>
+ *   ubs_menor_espera:       Array<{ ubs_nome, municipio, espera_media_dias, meta_espera_dias, ... }>
+ * }
+ */
+export function useDashboardCharts({ horizonte = 30, tipoAtendimento = null } = {}) {
+  const [charts, setCharts] = useState({
+    tendencia:              [],
+    por_local:              [],
+    por_municipio:          [],
+    ocupacao_passada:       [],
+    absenteismo_executante: [],
+    ubs_menor_espera:       [],
+  })
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState(null)
+  const [error, setError]     = useState(null)
 
-  const fetchCharts = useCallback(async () => {
+  const fetch = useCallback(async () => {
     setLoading(true)
     setError(null)
-    const dateISO = getDateISO(periodo)
 
-    try {
-      const [resA, resB, resC, resD] = await Promise.all([
-        // Query A — exames por unidade executante
-        supabase
-          .from('appointments')
-          .select('nome_unidade_executante, st_falta_registrada, status')
-          .gte('created_at', dateISO)
-          .not('nome_unidade_executante', 'is', null),
+    const results = await Promise.allSettled([
+      supabase.rpc('get_tendencia_absenteismo', {
+        p_horizonte_dias:   horizonte,
+        p_tipo_atendimento: tipoAtendimento,
+        p_media_movel_dias: 7,
+      }),
+      supabase.rpc('get_exames_por_local', {
+        p_horizonte_dias:   horizonte,
+        p_tipo_atendimento: tipoAtendimento,
+      }),
+      supabase.rpc('get_demanda_por_municipio', {
+        p_horizonte_dias:   horizonte,
+        p_tipo_atendimento: tipoAtendimento,
+      }),
+      supabase.rpc('fn_ocupacao_passada', {
+        p_dias_atras:       horizonte,
+        p_tipo_atendimento: tipoAtendimento,
+      }),
+      supabase.rpc('get_absenteismo_por_executante', {
+        p_horizonte_dias:   horizonte,
+        p_tipo_atendimento: tipoAtendimento,
+      }),
+      supabase.rpc('get_ubs_menor_espera', {
+        p_horizonte_dias:   horizonte,
+        p_tipo_atendimento: tipoAtendimento,
+      }),
+    ])
 
-        // Query B — demanda por município
-        supabase
-          .from('queue_entries')
-          .select('municipio_paciente, prioridade_codigo, status_local')
-          .gte('created_at', dateISO),
-
-        // Query C — ranking de UBS
-        supabase
-          .from('v_dashboard_fila')
-          .select('ubs_origem, prioridade_codigo, status_local')
-          .gte('created_at', dateISO),
-
-        // Query D — absenteísmo por semana
-        supabase
-          .from('appointments')
-          .select('scheduled_at, st_falta_registrada')
-          .gte('scheduled_at', dateISO)
-          .order('scheduled_at', { ascending: true }),
-      ])
-
-      const primeiroErro = [resA, resB, resC, resD].find(r => r.error)
-      if (primeiroErro) {
-        setError(primeiroErro.error.message)
-        setLoading(false)
-        return
-      }
-
-      // ── Chart A: por unidade executante ──────────────────────────────────────
-      const mapA = {}
-      for (const r of resA.data ?? []) {
-        const nome = r.nome_unidade_executante
-        if (!mapA[nome]) mapA[nome] = { nome, total: 0, faltas: 0, realizados: 0 }
-        mapA[nome].total++
-        if (Number(r.st_falta_registrada) === 1) mapA[nome].faltas++
-        if (r.status === 'realizado') mapA[nome].realizados++
-      }
-      const chartA = Object.values(mapA)
-        .sort((a, b) => b.total - a.total)
-        .slice(0, 7)
-
-      // ── Chart B: por município (top 10, invertido para barra horizontal) ─────
-      const mapB = {}
-      for (const r of resB.data ?? []) {
-        const m = r.municipio_paciente || 'Desconhecido'
-        if (!mapB[m]) mapB[m] = { municipio: trunc(m, 15), total: 0, urgentes: 0 }
-        mapB[m].total++
-        if (Number(r.prioridade_codigo) <= 2) mapB[m].urgentes++
-      }
-      const chartB = Object.values(mapB)
-        .sort((a, b) => b.total - a.total)
-        .slice(0, 10)
-        .map(r => ({ ...r, rotina: r.total - r.urgentes }))
-        .reverse()
-
-      // ── Chart C: por UBS (top 8) ──────────────────────────────────────────────
-      const mapC = {}
-      for (const r of resC.data ?? []) {
-        const ubs = r.ubs_origem || 'Desconhecida'
-        if (!mapC[ubs]) mapC[ubs] = { ubs: trunc(ubs, 22), total: 0, urgentes: 0 }
-        mapC[ubs].total++
-        if (Number(r.prioridade_codigo) <= 2) mapC[ubs].urgentes++
-      }
-      const chartC = Object.values(mapC)
-        .sort((a, b) => b.total - a.total)
-        .slice(0, 8)
-        .map(r => ({ ...r, rotina: r.total - r.urgentes }))
-        .reverse()
-
-      // ── Chart D: absenteísmo semanal ──────────────────────────────────────────
-      const mapD = {}
-      for (const r of resD.data ?? []) {
-        if (!r.scheduled_at) continue
-        const d = new Date(r.scheduled_at)
-        const day = d.getDay()
-        const diffToMon = day === 0 ? -6 : 1 - day
-        d.setDate(d.getDate() + diffToMon)
-        d.setHours(0, 0, 0, 0)
-        const key = d.toISOString()
-        if (!mapD[key]) mapD[key] = { _date: d, total: 0, faltas: 0 }
-        mapD[key].total++
-        if (Number(r.st_falta_registrada) === 1) mapD[key].faltas++
-      }
-      const chartD = Object.values(mapD)
-        .sort((a, b) => a._date - b._date)
-        .map(r => ({
-          semana: r._date.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' }),
-          total: r.total,
-          faltas: r.faltas,
-          taxa: r.total > 0 ? Math.round(r.faltas / r.total * 1000) / 10 : 0,
-        }))
-
-      setCharts({ A: chartA, B: chartB, C: chartC, D: chartD })
-    } catch (e) {
-      setError(e?.message ?? 'Erro desconhecido')
-    } finally {
-      setLoading(false)
+    // Extrai dado ou array vazio por posição — erro em uma RPC não derruba as outras
+    function safeData(result) {
+      if (result.status === 'rejected') return []
+      if (result.value?.error) return []
+      return result.value?.data ?? []
     }
-  }, [periodo])
 
-  useEffect(() => { fetchCharts() }, [fetchCharts])
+    const [tendencia, porLocal, porMunicipio, ocupPassada, absExec, ubsEspera] = results
 
-  return { charts, loading, error, refresh: fetchCharts, periodo, setPeriodo }
+    // Coleta erros não-fatais para expor ao caller
+    const erros = results
+      .filter(r => r.status === 'rejected' || r.value?.error)
+      .map(r => r.reason?.message ?? r.value?.error?.message ?? 'RPC error')
+
+    setCharts({
+      tendencia:              safeData(tendencia),
+      por_local:              safeData(porLocal),
+      por_municipio:          safeData(porMunicipio),
+      ocupacao_passada:       safeData(ocupPassada),
+      absenteismo_executante: safeData(absExec),
+      ubs_menor_espera:       safeData(ubsEspera),
+    })
+
+    setError(erros.length > 0 ? erros.join(' | ') : null)
+    setLoading(false)
+  }, [horizonte, tipoAtendimento])
+
+  useEffect(() => { fetch() }, [fetch])
+
+  return { charts, loading, error, refresh: fetch }
 }

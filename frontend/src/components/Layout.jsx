@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Outlet, NavLink, useNavigate } from 'react-router-dom'
-import { LayoutDashboard, ListOrdered, Monitor, Bell, Settings } from 'lucide-react'
+import { LayoutDashboard, ListOrdered, Monitor, Bell, Settings, BarChart2 } from 'lucide-react'
 import { useAuth } from '../hooks/useAuth'
 import { supabase } from '../lib/supabase'
 
@@ -8,6 +8,7 @@ const baseNav = [
   { to: '/dashboard',     icon: LayoutDashboard, label: 'Dashboard'      },
   { to: '/fila',          icon: ListOrdered,     label: 'Fila de Exames' },
   { to: '/maquinas',      icon: Monitor,         label: 'Equipamentos'   },
+  { to: '/analise',       icon: BarChart2,       label: 'Análise Gerencial' },
   { to: '/notificacoes',  icon: Bell,            label: 'Notificações'   },
 ]
 

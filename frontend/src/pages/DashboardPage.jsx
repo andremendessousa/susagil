@@ -1,22 +1,17 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
-  PieChart, Pie, Cell, Tooltip, Legend, Label,
   BarChart, Bar, XAxis, YAxis,
-  AreaChart, Area, ReferenceLine,
-  ResponsiveContainer,
+  LineChart, Line, ReferenceLine,
+  ResponsiveContainer, Tooltip, Legend, Cell,
 } from 'recharts'
 import {
   AlertTriangle, Clock, Activity, Users, Zap, Loader, MapPin,
-  BarChart2, PieChart as PieChartIcon, TrendingDown, Bell,
+  BarChart2, TrendingDown, Bell, Calendar,
 } from 'lucide-react'
-import { supabase } from '../lib/supabase'
 import { useKpiConfigs } from '../hooks/useKpiConfigs'
 import { useDashboardMetrics } from '../hooks/useDashboardMetrics'
 import { useDashboardCharts } from '../hooks/useDashboardCharts'
-
-// ─── Paleta dos gráficos ──────────────────────────────────────────────────────
-const PIE_COLORS = ['#1d4ed8', '#059669', '#d97706', '#7c3aed', '#db2777', '#0891b2', '#65a30d']
 
 // ─── Tooltip customizado pt-BR ────────────────────────────────────────────────
 function TooltipBR({ active, payload, label, suffix = '' }) {
@@ -118,54 +113,37 @@ function KpiCard({ config, valor, status, icon: Icon }) {
   )
 }
 
+const PERIODOS = [
+  { label: '7 dias',  value: 7  },
+  { label: '30 dias', value: 30 },
+  { label: '90 dias', value: 90 },
+]
+
 // ─── DashboardPage ────────────────────────────────────────────────────────────
 
 export default function DashboardPage() {
   const navigate = useNavigate()
+  const [horizonte, setHorizonte] = useState(30)
+  const [tipoTendencia, setTipoTendencia] = useState(null) // null = todos
   const { configs } = useKpiConfigs()
-  const { metrics, loading, error, refresh } = useDashboardMetrics()
-  const { charts, loading: loadingCharts, periodo, setPeriodo } = useDashboardCharts()
+  const { metrics, loading, error, refresh } = useDashboardMetrics({ horizonte })
+  const { charts, loading: loadingCharts } = useDashboardCharts({ horizonte })
+  // Hook secundário só para o widget de tendência (filtrável por tipo)
+  const { charts: chartsExtra, loading: loadingTendencia } = useDashboardCharts({
+    horizonte,
+    tipoAtendimento: tipoTendencia,
+  })
 
-  // Relógio atualizado a cada minuto
   const [agora, setAgora] = useState(new Date())
   useEffect(() => {
     const t = setInterval(() => setAgora(new Date()), 60000)
     return () => clearInterval(t)
   }, [])
 
-  // Polo macrorregional (estado atual da fila, sem filtro de período)
-  const [municipios, setMunicipios] = useState([])
-  const [loadingMunicipios, setLoadingMunicipios] = useState(true)
-
-  useEffect(() => {
-    async function fetchMunicipios() {
-      setLoadingMunicipios(true)
-      const { data } = await supabase
-        .from('v_dashboard_fila')
-        .select('municipio_paciente, status_local')
-
-      const map = {}
-      for (const row of data || []) {
-        const m = row.municipio_paciente || 'Desconhecido'
-        if (!map[m]) map[m] = { municipio_paciente: m, aguardando: 0, agendado: 0, total: 0 }
-        map[m].total++
-        if (row.status_local === 'aguardando') map[m].aguardando++
-        if (row.status_local === 'agendado') map[m].agendado++
-      }
-
-      setMunicipios(
-        Object.values(map)
-          .sort((a, b) => b.total - a.total)
-          .slice(0, 8)
-      )
-      setLoadingMunicipios(false)
-    }
-    fetchMunicipios()
-  }, [])
-
-  const totalMun = municipios.reduce((s, r) => s + r.total, 0)
-  const totalExamesA = charts.A.reduce((s, r) => s + r.total, 0)
-  const metaAbsenteismo = configs?.absenteismo_taxa?.valor_meta ?? 15
+  const dataAgora = agora.toLocaleDateString('pt-BR', {
+    weekday: 'long', day: '2-digit', month: 'long', year: 'numeric',
+  })
+  const horaAgora = agora.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
 
   // ─── Cards de KPI ────────────────────────────────────────────────────────────
   const kpiCards = [
@@ -175,22 +153,46 @@ export default function DashboardPage() {
     { chave: 'demanda_reprimida_dias',    metricKey: 'demanda_reprimida', icon: Users    },
   ]
 
-  // ─── Alertas ──────────────────────────────────────────────────────────────────
-  const vagasEmRisco = metrics?.vagas_em_risco?.valor ?? 0
-  const qtdOciosos   = metrics?.equipamentos_ociosos?.valor ?? 0
-  const horasRisco   = configs?.vagas_risco_horas?.valor_meta ?? 48
-  const temAlertas   = vagasEmRisco > 0 || qtdOciosos > 0
+  // Normaliza campos das RPCs para nomes canônicos
+  const porLocalData = charts.por_local.map(r => ({
+    nome:  r.nome ?? r.equipamento_nome ?? '',
+    total: r.total ?? r.realizados ?? 0,
+  }))
 
-  const PERIODOS = [
-    { label: '7 dias',  value: 7  },
-    { label: '30 dias', value: 30 },
-    { label: '90 dias', value: 90 },
-  ]
+  const porMunicipioData = [...charts.por_municipio]
+    .map(r => ({
+      municipio: r.municipio,
+      urgentes:  r.urgentes  ?? 0,
+      rotina:    r.rotina    ?? 0,
+      total:     r.total     ?? r.total_encaminhamentos ?? 0,
+      uf:        r.uf,
+    }))
+    .sort((a, b) => b.total - a.total)
+    .slice(0, 10)
 
-  const dataAgora = agora.toLocaleDateString('pt-BR', {
-    weekday: 'long', day: '2-digit', month: 'long', year: 'numeric',
-  })
-  const horaAgora = agora.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
+  // UBS espera: ordenar por espera_media_dias DESC (maiores problemas primeiro)
+  const ubsEspera = [...charts.ubs_menor_espera]
+    .sort((a, b) => b.espera_media_dias - a.espera_media_dias)
+    .slice(0, 8)
+
+  // Polo macrorregional
+  const municipiosPolo = [...charts.por_municipio]
+    .map(r => ({
+      municipio: r.municipio,
+      uf:        r.uf,
+      total:     r.total ?? r.total_encaminhamentos ?? 0,
+    }))
+    .sort((a, b) => b.total - a.total)
+    .slice(0, 8)
+  const totalMunPolo = municipiosPolo.reduce((s, r) => s + r.total, 0)
+
+  // Alertas operacionais
+  const absenteismoCritico = metrics?.absenteismo?.status === 'critico'
+  const qtdOciosos = (charts.ocupacao_passada ?? []).filter(r => Number(r.pct_ocupacao) < 30).length
+  const temAlertas = absenteismoCritico || qtdOciosos > 0
+
+  // Meta de absenteísmo para linha de referência
+  const metaAbsenteismo = configs?.absenteismo_taxa?.valor_meta ?? 15
 
   // ─── Render ───────────────────────────────────────────────────────────────────
   return (
@@ -206,17 +208,22 @@ export default function DashboardPage() {
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           <div className="flex rounded-lg overflow-hidden border border-gray-200 bg-white">
-            {PERIODOS.map(p => (
+            {[
+              { dias: 7,  label: '7 dias',  title: 'Visão operacional curta — ideal para gestão diária e alertas imediatos' },
+              { dias: 30, label: '30 dias', title: 'Gestão mensal padrão — referência para relatórios e metas mensais (padrão CQH/MS)' },
+              { dias: 90, label: '90 dias', title: 'Avaliação trimestral — ciclo de revisão de contratos e metas do edital CPSI' },
+            ].map(({ dias, label, title }) => (
               <button
-                key={p.value}
-                onClick={() => setPeriodo(p.value)}
+                key={dias}
+                title={title}
+                onClick={() => setHorizonte(dias)}
                 className={`px-3 py-1.5 text-xs font-medium transition-colors ${
-                  periodo === p.value
+                  horizonte === dias
                     ? 'bg-blue-700 text-white'
                     : 'text-gray-600 hover:bg-gray-50'
                 }`}
               >
-                {p.label}
+                {label}
               </button>
             ))}
           </div>
@@ -258,149 +265,236 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* ── ZONA 2: Gráficos 2×2 ──────────────────────────────────────────── */}
+      {/* ── Card prospectivo: Ocupação prevista (próximos 7 dias) ─────────── */}
+      {!loading && metrics?.ocupacao_futura != null && (
+        <div className="rounded-lg border border-blue-200 bg-blue-50 p-4">
+          <div className="flex items-center gap-2 text-blue-600 mb-1">
+            <Calendar size={16} />
+            <span className="text-xs font-medium uppercase tracking-wide">Próximos 7 dias</span>
+          </div>
+          <div className="text-3xl font-bold text-blue-700">
+            {metrics.ocupacao_futura.valor ?? '—'}%
+          </div>
+          <div className="text-sm text-blue-600">Ocupação prevista</div>
+          <div className="text-xs text-blue-400 mt-1">
+            Agendamentos confirmados sobre capacidade disponível
+          </div>
+        </div>
+      )}
+
+      {/* ── ZONA 2: Exames por local | Demanda por município ─────────────── */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
 
-        {/* Card A — Exames por local (Donut) */}
+        {/* Card A — Exames por local (BarChart vertical) */}
         <ChartCard
-          icon={PieChartIcon}
+          icon={BarChart2}
           titulo="Exames por local"
           pergunta="Onde estão sendo realizados os exames?"
           loading={loadingCharts}
-          vazio={charts.A.length === 0}
+          vazio={porLocalData.length === 0}
         >
-          <ResponsiveContainer width="100%" height={260}>
-            <PieChart>
-              <Pie
-                data={charts.A}
-                dataKey="total"
-                nameKey="nome"
-                innerRadius={60}
-                outerRadius={90}
-                paddingAngle={2}
-              >
-                {charts.A.map((_, i) => (
-                  <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
-                ))}
-                <Label
-                  content={({ viewBox }) => {
-                    const { cx, cy } = viewBox
-                    return (
-                      <text x={cx} y={cy} textAnchor="middle" dominantBaseline="middle">
-                        <tspan
-                          x={cx} dy="-0.35em"
-                          style={{ fontSize: '1.5rem', fontWeight: '700', fill: '#111827' }}
-                        >
-                          {totalExamesA.toLocaleString('pt-BR')}
-                        </tspan>
-                        <tspan
-                          x={cx} dy="1.5em"
-                          style={{ fontSize: '0.65rem', fill: '#9ca3af' }}
-                        >
-                          exames
-                        </tspan>
-                      </text>
-                    )
-                  }}
-                  position="center"
-                />
-              </Pie>
-              <Tooltip content={(props) => <TooltipBR {...props} />} />
-              <Legend
-                iconType="circle"
-                iconSize={8}
-                wrapperStyle={{ fontSize: '11px' }}
+          <ResponsiveContainer width="100%" height={300}>
+            <BarChart data={porLocalData} margin={{ top: 4, right: 12, bottom: 60, left: 0 }}>
+              <XAxis
+                dataKey="nome"
+                tick={{ fontSize: 11 }}
+                tickLine={false}
+                angle={-35}
+                textAnchor="end"
+                interval={0}
+                tickFormatter={v => String(v ?? '').slice(0, 20)}
               />
-            </PieChart>
+              <YAxis tick={{ fontSize: 11 }} tickLine={false} axisLine={false} />
+              <Tooltip
+                content={({ active, payload, label }) => {
+                  if (!active || !payload?.length) return null
+                  return (
+                    <div className="bg-white border border-gray-200 rounded-lg shadow-md px-3 py-2 text-xs">
+                      <p className="font-semibold text-gray-700 mb-1">{label}</p>
+                      <p className="text-blue-700">
+                        <strong>{Number(payload[0]?.value).toLocaleString('pt-BR')}</strong> exames realizados
+                      </p>
+                    </div>
+                  )
+                }}
+              />
+              <Bar dataKey="total" fill="#1d4ed8" name="Exames" radius={[3, 3, 0, 0]} />
+            </BarChart>
           </ResponsiveContainer>
         </ChartCard>
 
-        {/* Card B — Demanda por município (barras horizontais) */}
+        {/* Card B — Demanda por município (BarChart vertical empilhado) */}
         <ChartCard
           icon={MapPin}
           titulo="Demanda por município"
           pergunta="De onde vêm os pacientes?"
           loading={loadingCharts}
-          vazio={charts.B.length === 0}
+          vazio={charts.por_municipio.length === 0}
         >
-          <ResponsiveContainer width="100%" height={260}>
-            <BarChart layout="vertical" data={charts.B} margin={{ left: 0, right: 12, top: 4, bottom: 4 }}>
-              <XAxis type="number" tick={{ fontSize: 11 }} tickLine={false} axisLine={false} />
-              <YAxis type="category" dataKey="municipio" width={100} tick={{ fontSize: 11 }} tickLine={false} />
-              <Tooltip content={(props) => <TooltipBR {...props} />} />
-              <Bar dataKey="urgentes" stackId="a" fill="#dc2626" name="Urgentes" radius={0} />
-              <Bar dataKey="rotina"   stackId="a" fill="#1d4ed8" name="Rotina"   radius={[0, 3, 3, 0]} />
-              <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: '11px' }} />
-            </BarChart>
-          </ResponsiveContainer>
-        </ChartCard>
-
-        {/* Card C — UBS com mais encaminhamentos (barras horizontais) */}
-        <ChartCard
-          icon={BarChart2}
-          titulo="UBS com mais encaminhamentos"
-          pergunta="Quais UBS geram mais demanda?"
-          loading={loadingCharts}
-          vazio={charts.C.length === 0}
-        >
-          <ResponsiveContainer width="100%" height={260}>
-            <BarChart layout="vertical" data={charts.C} margin={{ left: 0, right: 12, top: 4, bottom: 4 }}>
-              <XAxis type="number" tick={{ fontSize: 11 }} tickLine={false} axisLine={false} />
-              <YAxis type="category" dataKey="ubs" width={140} tick={{ fontSize: 11 }} tickLine={false} />
-              <Tooltip content={(props) => <TooltipBR {...props} />} />
-              <Bar dataKey="rotina"   stackId="a" fill="#bfdbfe" name="Rotina"   radius={0} />
-              <Bar dataKey="urgentes" stackId="a" fill="#dc2626" name="Urgentes" radius={[0, 3, 3, 0]} />
-              <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: '11px' }} />
-            </BarChart>
-          </ResponsiveContainer>
-        </ChartCard>
-
-        {/* Card D — Tendência de absenteísmo (área + linha de meta) */}
-        <ChartCard
-          icon={TrendingDown}
-          titulo="Tendência de absenteísmo"
-          pergunta="O absenteísmo está melhorando?"
-          loading={loadingCharts}
-          vazio={charts.D.length === 0}
-        >
-          <ResponsiveContainer width="100%" height={260}>
-            <AreaChart data={charts.D} margin={{ top: 8, right: 12, bottom: 4, left: 0 }}>
-              <defs>
-                <linearGradient id="gradAbsenteismo" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%"  stopColor="#1d4ed8" stopOpacity={0.15} />
-                  <stop offset="95%" stopColor="#1d4ed8" stopOpacity={0}    />
-                </linearGradient>
-              </defs>
-              <XAxis dataKey="semana" tick={{ fontSize: 11 }} tickLine={false} />
-              <YAxis unit="%" tick={{ fontSize: 11 }} tickLine={false} axisLine={false} />
-              <Tooltip content={(props) => <TooltipBR {...props} suffix="%" />} />
-              <ReferenceLine
-                y={metaAbsenteismo}
-                stroke="#16a34a"
-                strokeDasharray="4 3"
-                label={{
-                  value: `Meta ${metaAbsenteismo}%`,
-                  position: 'insideTopRight',
-                  fontSize: 10,
-                  fill: '#16a34a',
+          <ResponsiveContainer width="100%" height={300}>
+            <BarChart data={porMunicipioData} margin={{ top: 4, right: 12, bottom: 60, left: 0 }}>
+              <XAxis
+                dataKey="municipio"
+                tick={{ fontSize: 11 }}
+                tickLine={false}
+                angle={-35}
+                textAnchor="end"
+                interval={0}
+              />
+              <YAxis tick={{ fontSize: 11 }} tickLine={false} axisLine={false} />
+              <Tooltip
+                content={({ active, payload, label }) => {
+                  if (!active || !payload?.length) return null
+                  const d = payload[0]?.payload ?? {}
+                  return (
+                    <div className="bg-white border border-gray-200 rounded-lg shadow-md px-3 py-2 text-xs">
+                      <p className="font-semibold text-gray-700 mb-1">{label}</p>
+                      <p className="text-red-600">Urgente: <strong>{Number(d.urgentes ?? 0).toLocaleString('pt-BR')}</strong></p>
+                      <p className="text-blue-600">Rotina: <strong>{Number(d.rotina ?? 0).toLocaleString('pt-BR')}</strong></p>
+                      <p className="text-gray-700 mt-1">Total: <strong>{Number(d.total ?? 0).toLocaleString('pt-BR')}</strong></p>
+                    </div>
+                  )
                 }}
               />
-              <Area
-                type="monotone"
-                dataKey="taxa"
-                stroke="#1d4ed8"
-                strokeWidth={2}
-                fill="url(#gradAbsenteismo)"
-                dot={{ r: 3, fill: '#1d4ed8' }}
-                name="Taxa (%)"
-              />
-            </AreaChart>
+              <Legend wrapperStyle={{ fontSize: 11, paddingTop: 8 }} />
+              <Bar dataKey="urgentes" stackId="a" fill="#dc2626" name="Urgente" />
+              <Bar dataKey="rotina"   stackId="a" fill="#1d4ed8" name="Rotina" radius={[3, 3, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </ChartCard>
+      </div>
+
+      {/* ── ZONA 3: UBS espera média | Tendência absenteísmo ──────────────── */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+
+        {/* Card C — Espera média por UBS encaminhadora */}
+        <ChartCard
+          icon={Clock}
+          titulo="Espera média por UBS encaminhadora"
+          pergunta="Quais UBS têm maior fila de espera?"
+          loading={loadingCharts}
+          vazio={charts.ubs_menor_espera.length === 0}
+        >
+          <ResponsiveContainer width="100%" height={300}>
+            <BarChart layout="vertical" data={ubsEspera} margin={{ left: 0, right: 50, top: 4, bottom: 4 }}>
+              <XAxis type="number" unit=" d" tick={{ fontSize: 11 }} tickLine={false} axisLine={false} />
+              <YAxis type="category" dataKey="ubs_nome" width={140} tick={{ fontSize: 11 }} tickLine={false} />
+              <Tooltip content={(props) => <TooltipBR {...props} suffix=" dias" />} />
+              {ubsEspera[0]?.meta_espera_dias != null && (
+                <ReferenceLine
+                  x={ubsEspera[0].meta_espera_dias}
+                  stroke="#16a34a"
+                  strokeDasharray="4 3"
+                  label={{
+                    value: `Meta ${ubsEspera[0].meta_espera_dias}d`,
+                    position: 'top',
+                    fontSize: 10,
+                    fill: '#16a34a',
+                  }}
+                />
+              )}
+              <Bar dataKey="espera_media_dias" fill="#1d4ed8" name="Espera média (dias)" radius={[0, 3, 3, 0]} />
+            </BarChart>
           </ResponsiveContainer>
         </ChartCard>
 
+        {/* Card D — Tendência de absenteísmo (LineChart dupla + seletor tipo) */}
+        <div className="card p-5">
+          <div className="flex items-start justify-between gap-2 mb-4">
+            <div className="flex items-start gap-2">
+              <TrendingDown size={15} className="text-blue-700 mt-0.5 flex-shrink-0" />
+              <div>
+                <h2 className="text-sm font-semibold text-gray-900">Tendência de absenteísmo</h2>
+                <p className="text-xs text-gray-400 mt-0.5">O absenteísmo está melhorando?</p>
+              </div>
+            </div>
+            {/* Seletor de tipo — só no widget de tendência */}
+            <div className="flex gap-1 text-xs flex-shrink-0">
+              {[
+                { value: null,       label: 'Todos'     },
+                { value: 'exame',    label: 'Exames'    },
+                { value: 'consulta', label: 'Consultas' },
+              ].map(({ value, label }) => (
+                <button
+                  key={label}
+                  onClick={() => setTipoTendencia(value)}
+                  className={`px-2 py-0.5 rounded ${
+                    tipoTendencia === value
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+          {loadingTendencia ? (
+            <ChartSkeleton />
+          ) : chartsExtra.tendencia.length === 0 ? (
+            <div className="h-52 flex items-center justify-center text-sm text-gray-400">
+              Nenhum dado no período selecionado
+            </div>
+          ) : (
+            <ResponsiveContainer width="100%" height={300}>
+              <LineChart data={chartsExtra.tendencia} margin={{ top: 8, right: 60, bottom: 4, left: 0 }}>
+                <XAxis
+                  dataKey="dia"
+                  tickFormatter={d => d ? new Date(d).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' }) : ''}
+                  tick={{ fontSize: 11 }}
+                  tickLine={false}
+                />
+                <YAxis domain={[0, 60]} unit="%" tick={{ fontSize: 11 }} tickLine={false} axisLine={false} />
+                <Tooltip content={(props) => <TooltipBR {...props} suffix="%" />} />
+                <Legend wrapperStyle={{ fontSize: 11 }} />
+                <ReferenceLine
+                  y={metaAbsenteismo}
+                  stroke="#16a34a"
+                  strokeDasharray="4 3"
+                  label={{
+                    value: `Meta ${metaAbsenteismo}%`,
+                    position: 'insideTopRight',
+                    fontSize: 10,
+                    fill: '#16a34a',
+                  }}
+                />
+                <ReferenceLine
+                  y={22}
+                  stroke="#9ca3af"
+                  strokeDasharray="4 2"
+                  label={{
+                    value: 'Média SUS 22%',
+                    position: 'insideBottomRight',
+                    fontSize: 10,
+                    fill: '#9ca3af',
+                  }}
+                />
+                <Line
+                  type="monotone"
+                  dataKey="taxa"
+                  stroke="#93c5fd"
+                  strokeWidth={1}
+                  strokeDasharray="4 3"
+                  dot={false}
+                  name="Taxa diária (%)"
+                  connectNulls={false}
+                />
+                <Line
+                  type="monotone"
+                  dataKey="taxa_media_movel"
+                  stroke="#1d4ed8"
+                  strokeWidth={2.5}
+                  dot={false}
+                  name="Média móvel 7d (%)"
+                  connectNulls={false}
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          )}
+        </div>
       </div>
 
-      {/* ── ZONA 3: Alertas operacionais ─────────────────────────────────── */}
+      {/* ── ZONA 4: Alerta operacional ───────────────────────────────────── */}
       {!loading && temAlertas && (
         <div className="card p-5">
           <div className="flex items-center justify-between mb-4">
@@ -417,15 +511,12 @@ export default function DashboardPage() {
             </button>
           </div>
           <ul className="space-y-3">
-            {vagasEmRisco > 0 && (
+            {absenteismoCritico && (
               <li className="flex items-start gap-3 text-sm">
                 <span className="mt-0.5 h-2 w-2 flex-shrink-0 rounded-full bg-red-500" />
                 <span className="text-gray-700">
-                  <span className="font-semibold text-red-700">
-                    {vagasEmRisco} vaga{vagasEmRisco > 1 ? 's' : ''}
-                  </span>
-                  {' '}sem confirmação nas próximas{' '}
-                  <span className="font-medium">{horasRisco}h</span>
+                  <span className="font-semibold text-red-700">Taxa de absenteísmo</span>
+                  {' '}acima do limite crítico
                 </span>
               </li>
             )}
@@ -436,7 +527,7 @@ export default function DashboardPage() {
                   <span className="font-semibold text-amber-700">
                     {qtdOciosos} equipamento{qtdOciosos > 1 ? 's' : ''}
                   </span>
-                  {' '}ativo{qtdOciosos > 1 ? 's' : ''} com ocupação abaixo de 30%
+                  {' '}com capacidade ociosa
                 </span>
               </li>
             )}
@@ -444,47 +535,42 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* ── ZONA 4: Polo macrorregional ───────────────────────────────────── */}
+      {/* ── ZONA 5: Polo macrorregional ───────────────────────────────────── */}
       <div className="card">
         <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <MapPin size={15} className="text-blue-700" />
             <h2 className="text-sm font-semibold text-gray-900">Polo macrorregional</h2>
           </div>
-          {loadingMunicipios && <Loader size={14} className="animate-spin text-gray-400" />}
+          {loadingCharts && <Loader size={14} className="animate-spin text-gray-400" />}
         </div>
         <table className="w-full text-sm">
           <thead className="bg-gray-50 text-xs text-gray-500 uppercase tracking-wide">
             <tr>
               <th className="px-5 py-3 text-left">Município</th>
-              <th className="px-5 py-3 text-right">Aguardando</th>
-              <th className="px-5 py-3 text-right">Agendado</th>
-              <th className="px-5 py-3 text-right">Total</th>
+              <th className="px-5 py-3 text-right">UF</th>
+              <th className="px-5 py-3 text-right">Encaminhamentos</th>
               <th className="px-5 py-3 text-right">% do total</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-50">
-            {municipios.map((row) => {
-              const isOutro = row.municipio_paciente !== 'Montes Claros'
-              const pctTotal = totalMun > 0
-                ? ((row.total / totalMun) * 100).toFixed(1)
-                : '0.0'
+            {municipiosPolo.map((row) => {
+              const pct = totalMunPolo > 0 ? ((row.total / totalMunPolo) * 100).toFixed(1) : '0.0'
               return (
-                <tr key={row.municipio_paciente} className="hover:bg-gray-50 transition-colors">
-                  <td className={`px-5 py-3 font-medium ${isOutro ? 'text-blue-700' : 'text-gray-900'}`}>
-                    {row.municipio_paciente}
+                <tr key={row.municipio} className="hover:bg-gray-50 transition-colors">
+                  <td className="px-5 py-3 font-medium text-gray-900">{row.municipio}</td>
+                  <td className="px-5 py-3 text-right text-gray-400">{row.uf ?? '—'}</td>
+                  <td className="px-5 py-3 text-right font-semibold text-gray-700">
+                    {Number(row.total).toLocaleString('pt-BR')}
                   </td>
-                  <td className="px-5 py-3 text-right text-gray-500">{row.aguardando}</td>
-                  <td className="px-5 py-3 text-right text-gray-500">{row.agendado}</td>
-                  <td className="px-5 py-3 text-right font-semibold text-gray-700">{row.total}</td>
-                  <td className="px-5 py-3 text-right text-gray-400">{pctTotal}%</td>
+                  <td className="px-5 py-3 text-right text-gray-400">{pct}%</td>
                 </tr>
               )
             })}
-            {!loadingMunicipios && municipios.length === 0 && (
+            {!loadingCharts && municipiosPolo.length === 0 && (
               <tr>
-                <td colSpan={5} className="px-5 py-8 text-center text-gray-400 text-sm">
-                  Nenhum dado disponível
+                <td colSpan={4} className="px-5 py-8 text-center text-gray-400 text-sm">
+                  Nenhum dado no período selecionado
                 </td>
               </tr>
             )}

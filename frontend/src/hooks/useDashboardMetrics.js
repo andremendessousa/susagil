@@ -1,153 +1,88 @@
 import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '../lib/supabase'
 import { useKpiConfigs } from './useKpiConfigs'
+import { calcularStatus } from './lib/calcularStatus'
 
-/**
- * Determina o status de um KPI comparando o valor real com as metas do banco.
- * @param {number} valorReal
- * @param {{ direcao: string, valor_meta: number, valor_critico: number, valor_atencao: number }} config
- * @returns {'ok' | 'atencao' | 'critico'}
- */
-export function calcularStatus(valorReal, config) {
-  if (!config || valorReal == null) return 'ok'
-  const { direcao, valor_meta, valor_critico, valor_atencao } = config
-
-  if (direcao === 'menor_melhor') {
-    if (valorReal >= valor_critico) return 'critico'
-    if (valorReal > valor_meta) return 'atencao'
-    return 'ok'
-  }
-
-  // maior_melhor
-  if (valorReal <= valor_critico) return 'critico'
-  if (valorReal < valor_meta) return 'atencao'
-  return 'ok'
-}
-
-export function useDashboardMetrics() {
-  const { configs, loading: loadingConfigs, error: errorConfigs } = useKpiConfigs()
+export function useDashboardMetrics({ horizonte = 30, tipoAtendimento = null } = {}) {
+  const { configs } = useKpiConfigs()
   const [metrics, setMetrics] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
 
-  const fetchMetrics = useCallback(async () => {
-    if (loadingConfigs) return
-    if (errorConfigs) {
-      setError(errorConfigs)
-      setLoading(false)
-      return
-    }
-
+  const fetch = useCallback(async () => {
+    if (!configs) return
     setLoading(true)
     setError(null)
 
+    // Parâmetros derivados de configs — sem hardcode
+    const janelaHoras  = configs.reaproveitamento_janela_horas?.valor_meta ?? 48
+    const diasLimite   = configs.espera_media_dias?.valor_meta ?? 120
+
     try {
-      const limiarDemanda = configs?.demanda_reprimida_dias?.valor_meta ?? 120
-      const limiarRiscoHoras = configs?.vagas_risco_horas?.valor_meta ?? 48
-
       const [
-        resAbsenteismo,
-        resEspera,
-        resCapacidade,
-        resDemanda,
-        resRisco,
+        absenteismo,
+        espera,
+        confirmacao,
+        reaproveitamento,
+        satisfacao,
+        demandaReprimida,
+        ocupacaoPassada,
+        ocupacaoFutura,
       ] = await Promise.all([
-        // Query A — absenteísmo real (últimos 30 dias)
-        supabase.rpc('calcular_absenteismo_30d'),
-
-        // Query B — tempo médio de espera (via v_kpis)
-        supabase
-          .from('v_kpis')
-          .select('media_dias_espera, total_aguardando, total_agendado, total_confirmado, total_outros_municipios')
-          .single(),
-
-        // Query C — aproveitamento de capacidade
-        supabase
-          .from('v_ocupacao_equipamentos')
-          .select('pct_ocupacao, status')
-          .eq('status', 'ativo'),
-
-        // Query D — demanda reprimida (limiar vem do banco)
-        supabase.rpc('calcular_demanda_reprimida', { p_limiar_dias: limiarDemanda }),
-
-        // Query E — vagas em risco (limiar vem do banco)
-        supabase.rpc('calcular_vagas_em_risco', { p_horas: limiarRiscoHoras }),
+        supabase.rpc('calcular_absenteismo',            { p_horizonte_dias: horizonte, p_tipo_atendimento: tipoAtendimento }),
+        supabase.rpc('calcular_tempo_medio_espera',     { p_horizonte_dias: horizonte, p_tipo_atendimento: tipoAtendimento }),
+        supabase.rpc('calcular_taxa_confirmacao_ativa', { p_horizonte_dias: horizonte, p_tipo_atendimento: tipoAtendimento }),
+        supabase.rpc('calcular_taxa_reaproveitamento',  { p_horizonte_dias: horizonte, p_tipo_atendimento: tipoAtendimento, p_janela_horas: janelaHoras }),
+        supabase.rpc('calcular_indice_satisfacao',      { p_horizonte_dias: horizonte, p_tipo_atendimento: tipoAtendimento }),
+        supabase.rpc('calcular_demanda_reprimida',      { p_horizonte_dias: horizonte, p_tipo_atendimento: tipoAtendimento, p_dias_limite: diasLimite }),
+        supabase.rpc('fn_ocupacao_passada',             { p_dias_atras: horizonte,    p_tipo_atendimento: tipoAtendimento }),
+        supabase.rpc('fn_ocupacao_futura',              { p_dias_a_frente: 7,         p_tipo_atendimento: tipoAtendimento }),
       ])
 
-      // Erros individuais
-      const erros = [resAbsenteismo, resEspera, resCapacidade, resDemanda, resRisco]
-        .filter((r) => r.error)
-        .map((r) => r.error.message)
+      const anyError = [absenteismo, espera, confirmacao, reaproveitamento, satisfacao, demandaReprimida, ocupacaoPassada, ocupacaoFutura].find(r => r.error)
+      if (anyError?.error) throw anyError.error
 
-      if (erros.length > 0) {
-        setError(erros.join(' | '))
-        setLoading(false)
-        return
-      }
+      const absValue    = absenteismo.data?.taxa_absenteismo     ?? 0
+      const esperaValue = espera.data?.espera_atual_dias         ?? 0
+      const confValue   = confirmacao.data?.taxa_confirmacao     ?? 0
+      const reapValue   = reaproveitamento.data?.taxa_reaproveitamento ?? 0
+      const satValue    = satisfacao.data?.nota_media            ?? 0
+      const demandaValue= demandaReprimida.data?.total_reprimida ?? 0
 
-      // --- Absenteísmo ---
-      const taxaAbsenteismo = resAbsenteismo.data?.taxa_absenteismo ?? 0
+      // Capacidade: aproveitamento histórico via fn_ocupacao_passada
+      const ocupRowsPassados = ocupacaoPassada.data || []
+      const capTotal  = ocupRowsPassados.reduce((s, r) => s + Number(r.capacidade_total),  0)
+      const realizados= ocupRowsPassados.reduce((s, r) => s + Number(r.exames_realizados), 0)
+      const capValue  = capTotal > 0 ? Math.round((realizados / capTotal) * 100) : 0
+      const ociosos   = ocupRowsPassados.filter(r => Number(r.pct_ocupacao) < 30).length
 
-      // --- Espera ---
-      const mediaEspera = resEspera.data?.media_dias_espera ?? 0
-      const totalAguardando = resEspera.data?.total_aguardando ?? 0
-      const totalOutrosMunicipios = resEspera.data?.total_outros_municipios ?? 0
-
-      // --- Capacidade ---
-      const equipamentos = resCapacidade.data || []
-      const totalEquipamentos = equipamentos.length
-      const equipamentosOciosos = equipamentos.filter((e) => e.pct_ocupacao < 30).length
-      const mediaOcupacao =
-        totalEquipamentos > 0
-          ? Math.round(
-              (equipamentos.reduce((sum, e) => sum + (e.pct_ocupacao ?? 0), 0) / totalEquipamentos) * 10
-            ) / 10
-          : 0
-
-      // --- Demanda reprimida ---
-      const totalReprimida = resDemanda.data?.total_reprimida ?? 0
-
-      // --- Vagas em risco ---
-      const vagasEmRisco = resRisco.data?.vagas_em_risco ?? 0
+      // Ocupação futura: próximos 7 dias (widget prospectivo separado)
+      const ocupRowsFuturos = ocupacaoFutura.data || []
+      const futCapTotal = ocupRowsFuturos.reduce((s, r) => s + Number(r.capacidade_total),    0)
+      const futComprom  = ocupRowsFuturos.reduce((s, r) => s + Number(r.vagas_comprometidas), 0)
+      const futValue    = futCapTotal > 0 ? Math.round((futComprom / futCapTotal) * 100) : 0
 
       setMetrics({
-        absenteismo: {
-          valor: taxaAbsenteismo,
-          status: calcularStatus(taxaAbsenteismo, configs?.absenteismo_taxa),
-        },
-        espera: {
-          valor: mediaEspera,
-          status: calcularStatus(mediaEspera, configs?.espera_media_dias),
-        },
-        capacidade: {
-          valor: mediaOcupacao,
-          status: calcularStatus(mediaOcupacao, configs?.capacidade_aproveitamento),
-        },
-        demanda_reprimida: {
-          valor: totalReprimida,
-          status: calcularStatus(totalReprimida, configs?.demanda_reprimida_dias),
-        },
-        vagas_em_risco: {
-          valor: vagasEmRisco,
-          status: calcularStatus(vagasEmRisco, configs?.vagas_risco_horas),
-        },
-        equipamentos_ociosos: {
-          valor: equipamentosOciosos,
-          status: equipamentosOciosos === 0 ? 'ok' : equipamentosOciosos === 1 ? 'atencao' : 'critico',
-        },
-        total_aguardando: totalAguardando,
-        total_outros_municipios: totalOutrosMunicipios,
+        absenteismo:          { valor: absValue,     status: calcularStatus(absValue,     configs.absenteismo_taxa)          },
+        espera:               { valor: esperaValue,  status: calcularStatus(esperaValue,  configs.espera_media_dias)         },
+        capacidade:           { valor: capValue,     status: calcularStatus(capValue,     configs.capacidade_aproveitamento) },
+        ocupacao_futura:      { valor: futValue,     status: calcularStatus(futValue,     configs.capacidade_aproveitamento) },
+        demanda_reprimida:    { valor: demandaValue, status: calcularStatus(demandaValue, configs.demanda_reprimida_dias)    },
+        confirmacao_ativa:    { valor: confValue,    status: calcularStatus(confValue,    configs.confirmacao_ativa_taxa)    },
+        reaproveitamento:     { valor: reapValue,    status: calcularStatus(reapValue,    configs.reaproveitamento_taxa)     },
+        satisfacao:           { valor: satValue,     status: calcularStatus(satValue,     configs.satisfacao_meta)           },
+        vagas_em_risco:       { valor: 0,            status: 'ok' },
+        equipamentos_ociosos: { valor: ociosos,      status: ociosos > 0 ? 'atencao' : 'ok' },
       })
     } catch (err) {
-      setError(err.message)
+      setError(err.message || String(err))
+      setMetrics(null)
     } finally {
       setLoading(false)
     }
-  }, [configs, loadingConfigs, errorConfigs])
+  }, [horizonte, tipoAtendimento, configs])
 
-  useEffect(() => {
-    fetchMetrics()
-  }, [fetchMetrics])
+  useEffect(() => { fetch() }, [fetch])
 
-  return { metrics, loading, error, refresh: fetchMetrics }
+  return { metrics, loading, error, refresh: fetch }
 }

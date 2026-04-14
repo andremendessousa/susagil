@@ -2,40 +2,36 @@ import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
 
 export function useKpiConfigs() {
-  const [configs, setConfigs] = useState({})
+  const [configs, setConfigs] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
 
   useEffect(() => {
+    let mounted = true
     async function fetch() {
       setLoading(true)
-      const { data, error } = await supabase
-        .from('v_kpi_status')
+      const { data, error: err } = await supabase
+        .from('v_kpi_thresholds')
         .select('*')
         .order('ordem_exibicao')
 
-      if (error) {
-        setError(error.message)
+      if (!mounted) return
+      if (err) {
+        setError(err.message)
+        setConfigs(null)
       } else {
-        // Indexar por chave para acesso O(1)
-        const indexed = (data || []).reduce((acc, item) => {
-          acc[item.chave] = {
-            label: item.label,
-            valor_meta: item.valor_meta,
-            valor_critico: item.valor_critico,
-            valor_atencao: item.valor_atencao,
-            direcao: item.direcao,
-            unidade: item.unidade,
-          }
-          return acc
-        }, {})
+        // Indexa por chave para acesso O(1)
+        const indexed = {}
+        for (const row of data || []) {
+          indexed[row.chave] = row
+        }
         setConfigs(indexed)
+        setError(null)
       }
       setLoading(false)
     }
-
     fetch()
-    // Sem realtime — configs mudam raramente; recarregar apenas na montagem
+    return () => { mounted = false }
   }, [])
 
   return { configs, loading, error }

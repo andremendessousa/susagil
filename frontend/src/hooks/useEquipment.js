@@ -1,37 +1,30 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '../lib/supabase'
 
-export function useEquipment() {
+export function useEquipment({ horizonte = 30, tipoAtendimento = null } = {}) {
   const [equipment, setEquipment] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState(null)
+  const [loading, setLoading]     = useState(true)
+  const [error, setError]         = useState(null)
 
-  async function fetch() {
+  const fetch = useCallback(async () => {
     setLoading(true)
-    const { data, error } = await supabase
-      .from('v_ocupacao_equipamentos')
-      .select('*')
-      .order('pct_ocupacao', { ascending: false })
+    setError(null)
+    try {
+      const { data, error: err } = await supabase.rpc('fn_ocupacao_passada', {
+        p_dias_atras:       horizonte,
+        p_tipo_atendimento: tipoAtendimento,
+      })
+      if (err) throw err
+      setEquipment(data ?? [])
+    } catch (err) {
+      setError(err.message || String(err))
+      setEquipment([])
+    } finally {
+      setLoading(false)
+    }
+  }, [horizonte, tipoAtendimento])
 
-    if (error) setError(error.message)
-    else setEquipment(data || [])
-    setLoading(false)
-  }
-
-  useEffect(() => {
-    fetch()
-
-    const channel = supabase
-      .channel('equipment-changes')
-      .on('postgres_changes', {
-        event: '*',
-        schema: 'public',
-        table: 'appointments'
-      }, () => fetch())
-      .subscribe()
-
-    return () => supabase.removeChannel(channel)
-  }, [])
+  useEffect(() => { fetch() }, [fetch])
 
   return { equipment, loading, error, refresh: fetch }
 }
