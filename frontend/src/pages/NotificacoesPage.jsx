@@ -1,6 +1,7 @@
-import { useState, useEffect, useCallback } from 'react'
-import { Bell, Send, Users, CheckCircle, Clock, AlertTriangle, Loader, X } from 'lucide-react'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { Bell, Send, Users, CheckCircle, Clock, AlertTriangle, Loader, X, ChevronDown, XCircle, Zap, Sparkles } from 'lucide-react'
 import { supabase } from '../lib/supabase'
+import { executarReaproveitamento } from '../lib/orquestracao'
 import { useNotifications } from '../hooks/useNotifications'
 import { useKpiConfigs } from '../hooks/useKpiConfigs'
 import { useAuth } from '../hooks/useAuth'
@@ -44,14 +45,18 @@ function horasRestantes(scheduledAt) {
 
 // ─── Toast ────────────────────────────────────────────────────────────────────
 
-function Toast({ message, onDone }) {
+function Toast({ message, special, onDone }) {
   useEffect(() => {
-    const t = setTimeout(onDone, 3500)
+    const t = setTimeout(onDone, special ? 5000 : 3500)
     return () => clearTimeout(t)
-  }, [onDone])
+  }, [onDone, special])
   return (
-    <div className="fixed bottom-6 right-6 z-50 bg-blue-800 text-white text-sm font-medium px-5 py-3 rounded-xl shadow-lg flex items-center gap-2">
-      <CheckCircle size={14} />
+    <div className={`fixed bottom-6 right-6 z-50 text-white text-sm font-medium px-5 py-3 rounded-xl shadow-lg flex items-center gap-2 transition-all ${
+      special
+        ? 'bg-emerald-700 border border-emerald-400 animate-pulse'
+        : 'bg-blue-800'
+    }`}>
+      {special ? <Sparkles size={15} className="text-emerald-200" /> : <CheckCircle size={14} />}
       {message}
     </div>
   )
@@ -106,25 +111,85 @@ function ModalMassa({ vagasEmRisco, onClose, onConfirm, saving }) {
   )
 }
 
+// ─── SimularRespostaMenu ─────────────────────────────────────────────────────
+
+function SimularRespostaMenu({ notif, onSimular, loading }) {
+  const [aberto, setAberto] = useState(false)
+  const ref = useRef(null)
+
+  useEffect(() => {
+    if (!aberto) return
+    function handler(e) {
+      if (ref.current && !ref.current.contains(e.target)) setAberto(false)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [aberto])
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        onClick={() => setAberto(prev => !prev)}
+        disabled={loading}
+        title="Esta ação simula o recebimento do Webhook da API para demonstração do funcionamento da comunicação com pacientes."
+        className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-indigo-700 bg-indigo-50 border border-indigo-200 rounded-lg hover:bg-indigo-100 transition-colors disabled:opacity-50"
+      >
+        {loading
+          ? <Loader size={11} className="animate-spin" />
+          : <Zap size={11} />}
+        Simular
+        <ChevronDown size={10} className={`transition-transform ${aberto ? 'rotate-180' : ''}`} />
+      </button>
+      {aberto && (
+        <div className="absolute right-0 top-full mt-1 z-30 bg-white border border-gray-200 rounded-xl shadow-lg min-w-[200px] py-1">
+          <div className="px-3 py-2 border-b border-gray-100">
+            <p className="text-[10px] text-gray-400 font-medium uppercase tracking-wide">Simular resposta do paciente</p>
+          </div>
+          <button
+            onClick={() => { setAberto(false); onSimular(notif, 'confirmou') }}
+            className="w-full text-left px-3 py-2.5 text-xs text-gray-700 hover:bg-green-50 flex items-center gap-2 transition-colors"
+          >
+            <CheckCircle size={13} className="text-green-600 flex-shrink-0" />
+            <span><strong>1</strong> — Confirmou presença</span>
+          </button>
+          <button
+            onClick={() => { setAberto(false); onSimular(notif, 'cancelou') }}
+            className="w-full text-left px-3 py-2.5 text-xs text-gray-700 hover:bg-red-50 flex items-center gap-2 transition-colors"
+          >
+            <XCircle size={13} className="text-red-600 flex-shrink-0" />
+            <span><strong>2</strong> — Cancelou / não precisa mais</span>
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ─── NotificacoesPage ─────────────────────────────────────────────────────────
 
 export default function NotificacoesPage() {
   const { user } = useAuth()
-  const { notifications, stats, loading, refresh } = useNotifications()
+  const { notifications, stats, loading, error: notifError, refresh } = useNotifications()
   const { configs } = useKpiConfigs()
 
   const [vagasEmRisco, setVagasEmRisco] = useState([])
   const [loadingVagas, setLoadingVagas] = useState(true)
   const [savingId, setSavingId] = useState(null)
   const [savingMassa, setSavingMassa] = useState(false)
+  const [savingSimulacao, setSavingSimulacao] = useState(null)
+  const [alertaCancelamento, setAlertaCancelamento] = useState(null)
   const [showModal, setShowModal] = useState(false)
-  const [toast, setToast] = useState(null)
+  const [toast, setToast] = useState(null)          // { message, special }
+  const showToast = (message, special = false) => setToast({ message, special })
 
-  const horasConfig = configs?.vagas_risco_horas?.valor_meta ?? 48
+  // || 48: guarda contra valor_meta = 0 no banco (vagas_risco_horas pode existir com 0)
+  const horasConfig = configs?.vagas_risco_horas?.valor_meta || 48
 
   // ── Vagas em risco ─────────────────────────────────────────────────────────
 
   const fetchVagas = useCallback(async () => {
+    // Aguardar configs carregar para usar horasConfig definitivo
+    if (configs === null) return
     setLoadingVagas(true)
     const limite = new Date(Date.now() + horasConfig * 60 * 60 * 1000).toISOString()
 
@@ -153,9 +218,74 @@ export default function NotificacoesPage() {
       )
     }
     setLoadingVagas(false)
-  }, [horasConfig])
+  }, [horasConfig, configs])
 
   useEffect(() => { fetchVagas() }, [fetchVagas])
+
+  // ── Simular resposta do paciente (demo) ───────────────────────────────
+
+  async function simularResposta(notif, resposta) {
+    setSavingSimulacao(notif.id)
+    try {
+      // 1 — Registra resposta na notificação
+      await supabase
+        .from('notification_log')
+        .update({
+          resposta_paciente: resposta,
+          respondido_at:     new Date().toISOString(),
+        })
+        .eq('id', notif.id)
+
+      if (resposta === 'confirmou') {
+        if (notif.appointment_id) {
+          await supabase
+            .from('appointments')
+            .update({ status: 'confirmado' })
+            .eq('id', notif.appointment_id)
+        }
+        showToast('Confirmação de presença registrada')
+
+      } else {
+        // ── ORQUESTRAÇÃO INTELIGENTE (via módulo centralizado) ────────────────
+
+        // 2 — Cancela agendamento atual e busca detalhes em paralelo
+        const [, apptRes] = await Promise.all([
+          notif.appointment_id
+            ? supabase
+                .from('appointments')
+                .update({ status: 'cancelado' })
+                .eq('id', notif.appointment_id)
+            : Promise.resolve(),
+          notif.appointment_id
+            ? supabase
+                .from('appointments')
+                .select('scheduled_at, equipment_id')
+                .eq('id', notif.appointment_id)
+                .single()
+            : Promise.resolve({ data: null }),
+        ])
+
+        // 3 — Delega ao módulo centralizado de reaproveitamento
+        const { nomeConvocado } = notif.appointment_id
+          ? await executarReaproveitamento(notif.appointment_id)
+          : { nomeConvocado: null }
+
+        setAlertaCancelamento(notif.paciente_nome)
+
+        if (nomeConvocado) {
+          showToast(
+            `Vaga reocupada automaticamente! Paciente ${nomeConvocado} convocado do topo da fila.`,
+            true
+          )
+        } else {
+          showToast('Cancelamento registrado — vaga liberada para redistribuição')
+        }
+      }
+    } finally {
+      setSavingSimulacao(null)
+      await refresh()
+    }
+  }
 
   // ── Notificar individualmente ──────────────────────────────────────────────
 
@@ -183,7 +313,7 @@ export default function NotificacoesPage() {
 
     setSavingId(null)
     await Promise.all([fetchVagas(), refresh()])
-    setToast('Notificação registrada')
+    showToast('Notificação registrada')
   }
 
   // ── Notificar em massa ─────────────────────────────────────────────────────
@@ -216,7 +346,7 @@ export default function NotificacoesPage() {
     setSavingMassa(false)
     setShowModal(false)
     await Promise.all([fetchVagas(), refresh()])
-    setToast(`${registros.length} notificações registradas`)
+    showToast(`${registros.length} notificações registradas`)
   }
 
   // ─── Render ────────────────────────────────────────────────────────────────
@@ -247,7 +377,7 @@ export default function NotificacoesPage() {
 
   return (
     <>
-      {toast && <Toast message={toast} onDone={() => setToast(null)} />}
+      {toast && <Toast message={toast.message} special={toast.special} onDone={() => setToast(null)} />}
       {showModal && (
         <ModalMassa
           vagasEmRisco={vagasEmRisco}
@@ -277,7 +407,29 @@ export default function NotificacoesPage() {
           )}
         </div>
 
-        {/* ── Seção 1: KPIs de comunicação ─────────────────────────────────── */}
+        {/* Alerta visual de cancelamento */}
+        {alertaCancelamento && (
+          <div className="flex items-start gap-3 bg-amber-50 border border-amber-300 rounded-xl px-5 py-4">
+            <Zap size={18} className="text-amber-600 flex-shrink-0 mt-0.5" />
+            <div className="flex-1">
+              <p className="text-sm font-semibold text-amber-900">
+                Vaga liberada para o motor de redistribuição
+              </p>
+              <p className="text-xs text-amber-700 mt-0.5">
+                <strong>{alertaCancelamento}</strong> confirmou cancelamento via WhatsApp.
+                A vaga está disponível para reaproveitamento imediato.
+              </p>
+            </div>
+            <button
+              onClick={() => setAlertaCancelamento(null)}
+              className="p-1 rounded hover:bg-amber-100 text-amber-500"
+            >
+              <X size={14} />
+            </button>
+          </div>
+        )}
+
+        {/* ── Seção 1: KPIs de comunicação ────────────────────────────────── */}
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           {kpiCards.map(({ label, value, icon: Icon, color, bg }) => (
             <div key={label} className="card p-5">
@@ -355,6 +507,12 @@ export default function NotificacoesPage() {
             <h2 className="text-sm font-semibold text-gray-900">Histórico</h2>
             {loading && <Loader size={14} className="animate-spin text-gray-400" />}
           </div>
+          {notifError && (
+            <div className="px-5 py-4 text-xs text-red-600 bg-red-50 flex items-center gap-2">
+              <AlertTriangle size={13} />
+              Erro ao carregar notificações: {notifError}
+            </div>
+          )}
           <table className="w-full text-sm">
             <thead className="bg-gray-50 text-xs text-gray-500 uppercase tracking-wide">
               <tr>
@@ -363,33 +521,61 @@ export default function NotificacoesPage() {
                 <th className="px-5 py-3 text-left">Equipamento</th>
                 <th className="px-5 py-3 text-left">Enviado em</th>
                 <th className="px-5 py-3 text-left">Resposta</th>
+                <th className="px-5 py-3 text-left">Ação Simulada</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-50">
-              {notifications.map((n) => (
-                <tr key={n.id} className="hover:bg-gray-50 transition-colors">
-                  <td className="px-5 py-3 font-medium text-gray-900">{n.paciente_nome}</td>
-                  <td className="px-5 py-3">
-                    <span className={`badge ${TIPO_BADGE[n.tipo] ?? 'bg-gray-100 text-gray-600'}`}>
-                      {n.tipo}
-                    </span>
-                  </td>
-                  <td className="px-5 py-3 text-gray-500">{n.equipamento_nome}</td>
-                  <td className="px-5 py-3 text-gray-500">{formatarDataHora(n.enviado_at)}</td>
-                  <td className="px-5 py-3">
-                    {n.resposta_paciente ? (
-                      <span className={`badge ${RESPOSTA_BADGE[n.resposta_paciente] ?? 'bg-gray-100 text-gray-600'}`}>
-                        {n.resposta_paciente}
+              {notifications.map((n) => {
+                const cancelou = n.resposta_paciente === 'cancelou'
+                const confirmou = n.resposta_paciente === 'confirmou'
+                return (
+                  <tr
+                    key={n.id}
+                    className={`transition-colors ${
+                      cancelou  ? 'bg-red-50 hover:bg-red-50' :
+                      confirmou ? 'bg-green-50/40 hover:bg-green-50/60' :
+                      'hover:bg-gray-50'
+                    }`}
+                  >
+                    <td className="px-5 py-3">
+                      <div className="flex items-center gap-2">
+                        <span className="font-medium text-gray-900">{n.paciente_nome}</span>
+                        {cancelou && (
+                          <span className="badge bg-red-200 text-red-800 text-[10px] font-bold">Vaga Recuperada</span>
+                        )}
+                      </div>
+                    </td>
+                    <td className="px-5 py-3">
+                      <span className={`badge ${TIPO_BADGE[n.tipo] ?? 'bg-gray-100 text-gray-600'}`}>
+                        {n.tipo}
                       </span>
-                    ) : (
-                      <span className="badge bg-gray-100 text-gray-500">sem resposta</span>
-                    )}
-                  </td>
-                </tr>
-              ))}
+                    </td>
+                    <td className="px-5 py-3 text-gray-500">{n.equipamento_nome}</td>
+                    <td className="px-5 py-3 text-gray-500">{formatarDataHora(n.enviado_at)}</td>
+                    <td className="px-5 py-3">
+                      {n.resposta_paciente ? (
+                        <span className={`badge ${RESPOSTA_BADGE[n.resposta_paciente] ?? 'bg-gray-100 text-gray-600'}`}>
+                          {n.resposta_paciente}
+                        </span>
+                      ) : (
+                        <span className="badge bg-gray-100 text-gray-500">sem resposta</span>
+                      )}
+                    </td>
+                    <td className="px-5 py-3">
+                      {!n.resposta_paciente && (
+                        <SimularRespostaMenu
+                          notif={n}
+                          onSimular={simularResposta}
+                          loading={savingSimulacao === n.id}
+                        />
+                      )}
+                    </td>
+                  </tr>
+                )
+              })}
               {!loading && notifications.length === 0 && (
                 <tr>
-                  <td colSpan={5} className="px-5 py-8 text-center text-gray-400 text-sm">
+                  <td colSpan={6} className="px-5 py-8 text-center text-gray-400 text-sm">
                     Nenhuma notificação registrada
                   </td>
                 </tr>

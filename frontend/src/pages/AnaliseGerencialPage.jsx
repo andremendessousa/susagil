@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import {
   BarChart, Bar, XAxis, YAxis, ReferenceLine,
   PieChart, Pie,
@@ -7,6 +7,8 @@ import {
 import { BarChart2, Clock, PieChart as PieChartIcon, RotateCcw } from 'lucide-react'
 import { useDashboardCharts } from '../hooks/useDashboardCharts'
 import { useKpiConfigs } from '../hooks/useKpiConfigs'
+import { useEscopo } from '../contexts/EscopoContext'
+import { MUNICIPIO_SEDE } from '../constants/macrorregiao'
 import { supabase } from '../lib/supabase'
 
 const PERIODOS = [
@@ -43,13 +45,16 @@ function esperaStatus(espera, meta) {
   return 'ok'
 }
 
-function PanelCard({ icon: Icon, titulo, subtitulo, loading, vazio, children }) {
+function PanelCard({ icon: Icon, titulo, subtitulo, loading, vazio, badge, children }) {
   return (
     <div className="card p-5">
       <div className="flex items-start gap-2 mb-4">
         <Icon size={15} className="text-blue-700 mt-0.5 flex-shrink-0" />
-        <div>
-          <h2 className="text-sm font-semibold text-gray-900">{titulo}</h2>
+        <div className="flex-1">
+          <div className="flex items-center gap-2 flex-wrap">
+            <h2 className="text-sm font-semibold text-gray-900">{titulo}</h2>
+            {badge}
+          </div>
           <p className="text-xs text-gray-400 mt-0.5">{subtitulo}</p>
         </div>
       </div>
@@ -72,6 +77,7 @@ export default function AnaliseGerencialPage() {
   const [horizonte, setHorizonte] = useState(30)
   const { charts, loading: loadingCharts } = useDashboardCharts({ horizonte })
   const { configs } = useKpiConfigs()
+  const { isMunicipal, isMacrorregiao } = useEscopo()
 
   // ─── Painel 3: Distribuição de prioridade na fila ─────────────────────────
   const [filaDist, setFilaDist] = useState([])
@@ -115,6 +121,8 @@ export default function AnaliseGerencialPage() {
   // ─── Painel 4: Reaproveitamento de vagas ─────────────────────────────────
   const [reaprovData, setReaprovData] = useState({ faltas: 0, reaproveitados: 0 })
   const [loadingReaprov, setLoadingReaprov] = useState(true)
+  const [reaprovTick, setReaprovTick] = useState(0)       // incrementado pelo realtime
+  const [vagasRecuperadas, setVagasRecuperadas] = useState(0)
 
   useEffect(() => {
     let mounted = true
@@ -147,7 +155,39 @@ export default function AnaliseGerencialPage() {
     }
     fetchReaprov()
     return () => { mounted = false }
-  }, [horizonte])
+  }, [horizonte, reaprovTick])
+
+  // Realtime: captura cancelamentos (UPDATE) E reaproveitamentos (INSERT com reaproveitado_de_id)
+  useEffect(() => {
+    const channel = supabase
+      .channel('analise-appointments-realtime')
+      .on('postgres_changes', {
+        event: 'UPDATE',
+        schema: 'public',
+        table: 'appointments',
+      }, (payload) => {
+        if (
+          payload.new?.status === 'cancelado' &&
+          payload.old?.status !== 'cancelado'
+        ) {
+          // Vaga foi cancelada — aguarda o INSERT de reaproveitamento antes de recalcular
+          setReaprovTick(t => t + 1)
+        }
+      })
+      .on('postgres_changes', {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'appointments',
+      }, (payload) => {
+        if (payload.new?.reaproveitado_de_id != null) {
+          // Nova vaga reaproveitada criada — incrementa contador visual e força refetch
+          setVagasRecuperadas(prev => prev + 1)
+          setReaprovTick(t => t + 1)
+        }
+      })
+      .subscribe()
+    return () => supabase.removeChannel(channel)
+  }, [])
 
   const taxaReaprov = reaprovData.faltas > 0
     ? ((reaprovData.reaproveitados / reaprovData.faltas) * 100).toFixed(1)
@@ -160,8 +200,17 @@ export default function AnaliseGerencialPage() {
     taxaReaprovNum >= metaReaprov * 0.7      ? '#ca8a04' :
                                                '#dc2626'
 
-  // Dados painel 2: ordenar por espera_media_dias DESC
-  const ubsOrdenada = [...charts.ubs_menor_espera]
+  // Dados painel 2: filtrar por escopo e ordenar por espera_media_dias DESC
+  const ubsEsperaFiltradas = useMemo(() => {
+    if (!charts.ubs_menor_espera?.length) return []
+    if (isMunicipal)
+      return charts.ubs_menor_espera.filter(
+        d => d.municipio === MUNICIPIO_SEDE || d.municipio === 'Montes Claros'
+      )
+    return charts.ubs_menor_espera
+  }, [charts.ubs_menor_espera, isMunicipal])
+
+  const ubsOrdenada = [...ubsEsperaFiltradas]
     .sort((a, b) => b.espera_media_dias - a.espera_media_dias)
 
   return (
@@ -277,7 +326,7 @@ export default function AnaliseGerencialPage() {
               <thead className="bg-gray-50 text-gray-500 uppercase tracking-wide sticky top-0">
                 <tr>
                   <th className="px-3 py-2 text-left">UBS</th>
-                  <th className="px-3 py-2 text-left">Município</th>
+                  {isMacrorregiao && <th className="px-3 py-2 text-left">Município</th>}
                   <th className="px-3 py-2 text-right">Encaminhamentos</th>
                   <th className="px-3 py-2 text-right">Espera média</th>
                   <th className="px-3 py-2 text-right">Status</th>
@@ -290,7 +339,7 @@ export default function AnaliseGerencialPage() {
                   return (
                     <tr key={i} className="hover:bg-gray-50 transition-colors">
                       <td className="px-3 py-2 font-medium text-gray-900">{row.ubs_nome}</td>
-                      <td className="px-3 py-2 text-gray-500">{row.municipio}</td>
+                      {isMacrorregiao && <td className="px-3 py-2 text-gray-500">{row.municipio}</td>}
                       <td className="px-3 py-2 text-right text-gray-700">
                         {Number(row.total_encaminhamentos).toLocaleString('pt-BR')}
                       </td>
@@ -362,6 +411,11 @@ export default function AnaliseGerencialPage() {
           subtitulo="Estamos recuperando vagas perdidas?"
           loading={loadingReaprov}
           vazio={false}
+          badge={vagasRecuperadas > 0 ? (
+            <span className="badge bg-emerald-100 text-emerald-800 text-[10px] font-bold animate-pulse">
+              +{vagasRecuperadas} Vaga{vagasRecuperadas > 1 ? 's' : ''} Recuperada{vagasRecuperadas > 1 ? 's' : ''}
+            </span>
+          ) : null}
         >
           <div className="flex flex-col items-center justify-center h-52 gap-5">
             <div className="text-center">

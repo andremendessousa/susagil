@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   BarChart, Bar, XAxis, YAxis,
@@ -12,6 +12,8 @@ import {
 import { useKpiConfigs } from '../hooks/useKpiConfigs'
 import { useDashboardMetrics } from '../hooks/useDashboardMetrics'
 import { useDashboardCharts } from '../hooks/useDashboardCharts'
+import { useEscopo } from '../contexts/EscopoContext'
+import { MUNICIPIOS_MACRORREGIAO, MUNICIPIO_SEDE } from '../constants/macrorregiao'
 
 // ─── Tooltip customizado pt-BR ────────────────────────────────────────────────
 function TooltipBR({ active, payload, label, suffix = '' }) {
@@ -125,6 +127,7 @@ export default function DashboardPage() {
   const navigate = useNavigate()
   const [horizonte, setHorizonte] = useState(30)
   const [tipoTendencia, setTipoTendencia] = useState(null) // null = todos
+  const { isMunicipal, isMacrorregiao } = useEscopo()
   const { configs } = useKpiConfigs()
   const { metrics, loading, error, refresh } = useDashboardMetrics({ horizonte })
   const { charts, loading: loadingCharts } = useDashboardCharts({ horizonte })
@@ -159,31 +162,47 @@ export default function DashboardPage() {
     total: r.total ?? r.realizados ?? 0,
   }))
 
-  const porMunicipioData = [...charts.por_municipio]
-    .map(r => ({
-      municipio: r.municipio,
-      urgentes:  r.urgentes  ?? 0,
-      rotina:    r.rotina    ?? 0,
-      total:     r.total     ?? r.total_encaminhamentos ?? 0,
-      uf:        r.uf,
-    }))
-    .sort((a, b) => b.total - a.total)
-    .slice(0, 10)
+  // Filtros client-side por escopo geográfico — declarados ANTES de qualquer uso
+  const porMunicipioFiltrado = useMemo(() => {
+    if (!charts.por_municipio?.length) return []
+    const base = isMunicipal
+      ? charts.por_municipio.filter(d => d.municipio === MUNICIPIO_SEDE)
+      : charts.por_municipio.filter(d => MUNICIPIOS_MACRORREGIAO.includes(d.municipio))
+    return base
+      .map(r => ({
+        municipio: r.municipio,
+        urgentes:  r.urgentes  ?? 0,
+        rotina:    r.rotina    ?? 0,
+        total:     r.total     ?? r.total_encaminhamentos ?? 0,
+        uf:        r.uf,
+      }))
+      .sort((a, b) => b.total - a.total)
+      .slice(0, 10)
+  }, [charts.por_municipio, isMunicipal])
 
-  // UBS espera: ordenar por espera_media_dias DESC (maiores problemas primeiro)
-  const ubsEspera = [...charts.ubs_menor_espera]
-    .sort((a, b) => b.espera_media_dias - a.espera_media_dias)
-    .slice(0, 8)
+  // Alias para uso nos gráficos
+  const porMunicipioData = porMunicipioFiltrado
 
-  // Polo macrorregional
-  const municipiosPolo = [...charts.por_municipio]
-    .map(r => ({
-      municipio: r.municipio,
-      uf:        r.uf,
-      total:     r.total ?? r.total_encaminhamentos ?? 0,
-    }))
-    .sort((a, b) => b.total - a.total)
-    .slice(0, 8)
+  // UBS espera: filtrar por escopo, ordenar por espera DESC
+  const ubsEspera = useMemo(() => {
+    if (!charts.ubs_menor_espera?.length) return []
+    const base = [...charts.ubs_menor_espera]
+      .sort((a, b) => b.espera_media_dias - a.espera_media_dias)
+      .slice(0, 8)
+    if (isMunicipal)
+      return base.filter(
+        d => d.municipio === MUNICIPIO_SEDE || d.municipio === 'Montes Claros'
+      )
+    return base
+  }, [charts.ubs_menor_espera, isMunicipal])
+
+  // Polo macrorregional — derivado do filtro já aplicado
+  const municipiosPolo = useMemo(() =>
+    porMunicipioFiltrado
+      .map(r => ({ municipio: r.municipio, uf: r.uf, total: r.total }))
+      .sort((a, b) => b.total - a.total)
+      .slice(0, 8)
+  , [porMunicipioFiltrado])
   const totalMunPolo = municipiosPolo.reduce((s, r) => s + r.total, 0)
 
   // Alertas operacionais
@@ -323,45 +342,75 @@ export default function DashboardPage() {
           </ResponsiveContainer>
         </ChartCard>
 
-        {/* Card B — Demanda por município (BarChart vertical empilhado) */}
-        <ChartCard
-          icon={MapPin}
-          titulo="Demanda por município"
-          pergunta="De onde vêm os pacientes?"
-          loading={loadingCharts}
-          vazio={charts.por_municipio.length === 0}
-        >
-          <ResponsiveContainer width="100%" height={300}>
-            <BarChart data={porMunicipioData} margin={{ top: 4, right: 12, bottom: 60, left: 0 }}>
-              <XAxis
-                dataKey="municipio"
-                tick={{ fontSize: 11 }}
-                tickLine={false}
-                angle={-35}
-                textAnchor="end"
-                interval={0}
-              />
-              <YAxis tick={{ fontSize: 11 }} tickLine={false} axisLine={false} />
-              <Tooltip
-                content={({ active, payload, label }) => {
-                  if (!active || !payload?.length) return null
-                  const d = payload[0]?.payload ?? {}
-                  return (
-                    <div className="bg-white border border-gray-200 rounded-lg shadow-md px-3 py-2 text-xs">
-                      <p className="font-semibold text-gray-700 mb-1">{label}</p>
-                      <p className="text-red-600">Urgente: <strong>{Number(d.urgentes ?? 0).toLocaleString('pt-BR')}</strong></p>
-                      <p className="text-blue-600">Rotina: <strong>{Number(d.rotina ?? 0).toLocaleString('pt-BR')}</strong></p>
-                      <p className="text-gray-700 mt-1">Total: <strong>{Number(d.total ?? 0).toLocaleString('pt-BR')}</strong></p>
-                    </div>
-                  )
-                }}
-              />
-              <Legend wrapperStyle={{ fontSize: 11, paddingTop: 8 }} />
-              <Bar dataKey="urgentes" stackId="a" fill="#dc2626" name="Urgente" />
-              <Bar dataKey="rotina"   stackId="a" fill="#1d4ed8" name="Rotina" radius={[3, 3, 0, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
-        </ChartCard>
+        {/* Card B — Demanda por município (macrorregião) | Ocupação (municipal) */}
+        {isMacrorregiao ? (
+          <ChartCard
+            icon={MapPin}
+            titulo="Demanda por município"
+            pergunta="De onde vêm os pacientes?"
+            loading={loadingCharts}
+            vazio={porMunicipioData.length === 0}
+          >
+            <ResponsiveContainer width="100%" height={300}>
+              <BarChart data={porMunicipioData} margin={{ top: 4, right: 12, bottom: 60, left: 0 }}>
+                <XAxis
+                  dataKey="municipio"
+                  tick={{ fontSize: 11 }}
+                  tickLine={false}
+                  angle={-35}
+                  textAnchor="end"
+                  interval={0}
+                />
+                <YAxis tick={{ fontSize: 11 }} tickLine={false} axisLine={false} />
+                <Tooltip
+                  content={({ active, payload, label }) => {
+                    if (!active || !payload?.length) return null
+                    const d = payload[0]?.payload ?? {}
+                    return (
+                      <div className="bg-white border border-gray-200 rounded-lg shadow-md px-3 py-2 text-xs">
+                        <p className="font-semibold text-gray-700 mb-1">{label}</p>
+                        <p className="text-red-600">Urgente: <strong>{Number(d.urgentes ?? 0).toLocaleString('pt-BR')}</strong></p>
+                        <p className="text-blue-600">Rotina: <strong>{Number(d.rotina ?? 0).toLocaleString('pt-BR')}</strong></p>
+                        <p className="text-gray-700 mt-1">Total: <strong>{Number(d.total ?? 0).toLocaleString('pt-BR')}</strong></p>
+                      </div>
+                    )
+                  }}
+                />
+                <Legend wrapperStyle={{ fontSize: 11, paddingTop: 8 }} />
+                <Bar dataKey="urgentes" stackId="a" fill="#dc2626" name="Urgente" />
+                <Bar dataKey="rotina"   stackId="a" fill="#1d4ed8" name="Rotina" radius={[3, 3, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </ChartCard>
+        ) : (
+          <ChartCard
+            icon={BarChart2}
+            titulo="Ocupação por equipamento"
+            pergunta="Qual equipamento está sendo mais utilizado?"
+            loading={loadingCharts}
+            vazio={charts.ocupacao_passada.length === 0}
+          >
+            <ResponsiveContainer width="100%" height={300}>
+              <BarChart layout="vertical" data={charts.ocupacao_passada} margin={{ left: 0, right: 50, top: 4, bottom: 4 }}>
+                <XAxis type="number" unit="%" domain={[0, 100]} tick={{ fontSize: 11 }} tickLine={false} axisLine={false} />
+                <YAxis type="category" dataKey="equipamento_nome" width={140} tick={{ fontSize: 11 }} tickLine={false} />
+                <Tooltip content={(props) => <TooltipBR {...props} suffix="%" />} />
+                <ReferenceLine
+                  x={85}
+                  stroke="#16a34a"
+                  strokeDasharray="4 3"
+                  label={{ value: 'Meta 85%', position: 'top', fontSize: 10, fill: '#16a34a' }}
+                />
+                <Bar dataKey="pct_ocupacao" name="Ocupação (%)" radius={[0, 3, 3, 0]}>
+                  {charts.ocupacao_passada.map((entry, i) => {
+                    const p = Number(entry.pct_ocupacao)
+                    return <Cell key={i} fill={p >= 85 ? '#16a34a' : p >= 50 ? '#d97706' : '#dc2626'} />
+                  })}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </ChartCard>
+        )}
       </div>
 
       {/* ── ZONA 3: UBS espera média | Tendência absenteísmo ──────────────── */}
@@ -535,7 +584,8 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* ── ZONA 5: Polo macrorregional ───────────────────────────────────── */}
+      {/* ── ZONA 5: Polo macrorregional (apenas modo macrorregião) ─────────── */}
+      {isMacrorregiao && (
       <div className="card">
         <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -577,6 +627,7 @@ export default function DashboardPage() {
           </tbody>
         </table>
       </div>
+      )}
     </div>
   )
 }

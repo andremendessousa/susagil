@@ -41,7 +41,7 @@ export function useNotifications() {
       .from('notification_log')
       .select(`
         id, tipo, canal, enviado_at, respondido_at,
-        resposta_paciente, entregue, erro,
+        resposta_paciente, entregue, erro, appointment_id,
         patients ( nome, telefone ),
         appointments (
           scheduled_at,
@@ -61,6 +61,7 @@ export function useNotifications() {
         telefone:          n.patients?.telefone   ?? null,
         scheduled_at:      n.appointments?.scheduled_at ?? null,
         equipamento_nome:  n.appointments?.equipment?.nome ?? '—',
+        appointment_id:    n.appointment_id ?? null,
       }))
       setNotifications(normalized)
       setStats(calcularStats(normalized))

@@ -1,15 +1,18 @@
 import { useState, useEffect } from 'react'
 import { Outlet, NavLink, useNavigate } from 'react-router-dom'
-import { LayoutDashboard, ListOrdered, Monitor, Bell, Settings, BarChart2 } from 'lucide-react'
+import { LayoutDashboard, ListOrdered, Monitor, Bell, Settings, BarChart2, Globe } from 'lucide-react'
 import { useAuth } from '../hooks/useAuth'
 import { supabase } from '../lib/supabase'
+import { SeletorEscopo } from './SeletorEscopo'
+import { useEscopo } from '../contexts/EscopoContext'
 
 const baseNav = [
-  { to: '/dashboard',     icon: LayoutDashboard, label: 'Dashboard'      },
-  { to: '/fila',          icon: ListOrdered,     label: 'Fila de Exames' },
-  { to: '/maquinas',      icon: Monitor,         label: 'Equipamentos'   },
+  { to: '/dashboard',     icon: LayoutDashboard, label: 'Dashboard'        },
+  { to: '/fila',          icon: ListOrdered,     label: 'Fila de Exames'  },
+  { to: '/maquinas',      icon: Monitor,         label: 'Equipamentos'    },
   { to: '/analise',       icon: BarChart2,       label: 'Análise Gerencial' },
-  { to: '/notificacoes',  icon: Bell,            label: 'Notificações'   },
+  { to: '/notificacoes',  icon: Bell,            label: 'Notificações'    },
+  { to: '/configuracoes', icon: Settings,        label: 'Configurações'   },
 ]
 
 function useVagasEmRiscoCount() {
@@ -46,10 +49,9 @@ export default function Layout() {
   const navigate = useNavigate()
   const isAdmin = profile?.role === 'admin'
   const vagasEmRisco = useVagasEmRiscoCount()
+  const { isMacrorregiao } = useEscopo()
 
-  const nav = isAdmin
-    ? [...baseNav, { to: '/configuracoes', icon: Settings, label: 'Configurações' }]
-    : baseNav
+  const nav = baseNav
 
   return (
     <div className="flex h-screen bg-gray-50">
@@ -91,8 +93,16 @@ export default function Layout() {
       </aside>
 
       <div className="flex-1 flex flex-col overflow-hidden">
-        <header className="bg-white border-b border-gray-200 px-6 py-3 flex items-center justify-between">
-          <h2 className="text-sm font-medium text-gray-500">Sistema Municipal de Regulação de Imagem</h2>
+        <header className="bg-white border-b border-gray-200 px-6 py-3 flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <SeletorEscopo />
+            {isMacrorregiao && (
+              <div className="flex items-center gap-1.5 px-2 py-1 bg-amber-100 text-amber-700 rounded text-xs font-medium">
+                <Globe size={12} />
+                Visão Macrorregional ativa
+              </div>
+            )}
+          </div>
           <button
             onClick={() => navigate('/notificacoes')}
             className="relative p-2 rounded-lg hover:bg-gray-100"
