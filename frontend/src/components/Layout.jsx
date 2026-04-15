@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Outlet, NavLink, useNavigate } from 'react-router-dom'
-import { LayoutDashboard, ListOrdered, Monitor, Bell, Settings, BarChart2, Globe } from 'lucide-react'
+import { LayoutDashboard, ListOrdered, Monitor, Bell, Settings, BarChart2, Globe, MessageSquare } from 'lucide-react'
 import { useAuth } from '../hooks/useAuth'
 import { supabase } from '../lib/supabase'
 import { SeletorEscopo } from './SeletorEscopo'
@@ -12,6 +12,7 @@ const baseNav = [
   { to: '/maquinas',      icon: Monitor,         label: 'Equipamentos'    },
   { to: '/analise',       icon: BarChart2,       label: 'Análise Gerencial' },
   { to: '/notificacoes',  icon: Bell,            label: 'Notificações'    },
+  { to: '/whatsapp',      icon: MessageSquare,   label: 'Comunicação WhatsApp' },
   { to: '/configuracoes', icon: Settings,        label: 'Configurações'   },
 ]
 
@@ -44,11 +45,37 @@ function useVagasEmRiscoCount() {
   return count
 }
 
+function usePendingNotifCount() {
+  const [count, setCount] = useState(0)
+
+  useEffect(() => {
+    async function fetch() {
+      const { count: total } = await supabase
+        .from('notification_log')
+        .select('id', { count: 'exact', head: true })
+        .is('resposta_paciente', null)
+      setCount(total ?? 0)
+    }
+
+    fetch()
+
+    const channel = supabase
+      .channel('layout-notif-pending')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'notification_log' }, fetch)
+      .subscribe()
+
+    return () => supabase.removeChannel(channel)
+  }, [])
+
+  return count
+}
+
 export default function Layout() {
   const { profile } = useAuth()
   const navigate = useNavigate()
   const isAdmin = profile?.role === 'admin'
-  const vagasEmRisco = useVagasEmRiscoCount()
+  const vagasEmRisco  = useVagasEmRiscoCount()
+  const pendingNotifs = usePendingNotifCount()
   const { isMacrorregiao } = useEscopo()
 
   const nav = baseNav
@@ -77,11 +104,19 @@ export default function Layout() {
                 {to === '/notificacoes' && vagasEmRisco > 0 && (
                   <span className="absolute -top-1 -right-1 h-2 w-2 rounded-full bg-red-500" />
                 )}
+                {to === '/whatsapp' && pendingNotifs > 0 && (
+                  <span className="absolute -top-1 -right-1 h-2 w-2 rounded-full bg-blue-400" />
+                )}
               </span>
               {label}
               {to === '/notificacoes' && vagasEmRisco > 0 && (
                 <span className="ml-auto text-xs bg-red-500 text-white rounded-full px-1.5 py-0.5 leading-none">
                   {vagasEmRisco}
+                </span>
+              )}
+              {to === '/whatsapp' && pendingNotifs > 0 && (
+                <span className="ml-auto text-xs bg-blue-500 text-white rounded-full px-1.5 py-0.5 leading-none">
+                  {pendingNotifs}
                 </span>
               )}
             </NavLink>

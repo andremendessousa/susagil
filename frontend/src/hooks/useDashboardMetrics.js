@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { supabase } from '../lib/supabase'
 import { useKpiConfigs } from './useKpiConfigs'
 import { calcularStatus } from './lib/calcularStatus'
@@ -15,8 +15,9 @@ export function useDashboardMetrics({ horizonte = 30, tipoAtendimento = null } =
     setError(null)
 
     // Parâmetros derivados de configs — sem hardcode
-    const janelaHoras  = configs.reaproveitamento_janela_horas?.valor_meta ?? 48
-    const diasLimite   = configs.espera_media_dias?.valor_meta ?? 120
+    const janelaHoras     = configs.reaproveitamento_janela_horas?.valor_meta ?? 48
+    const diasLimite      = configs.espera_media_dias?.valor_meta ?? 120
+    const vagasRiscoHoras = configs.vagas_risco_horas?.valor_meta ?? 48
 
     try {
       const [
@@ -28,6 +29,7 @@ export function useDashboardMetrics({ horizonte = 30, tipoAtendimento = null } =
         demandaReprimida,
         ocupacaoPassada,
         ocupacaoFutura,
+        vagasRisco,
       ] = await Promise.all([
         supabase.rpc('calcular_absenteismo',            { p_horizonte_dias: horizonte, p_tipo_atendimento: tipoAtendimento }),
         supabase.rpc('calcular_tempo_medio_espera',     { p_horizonte_dias: horizonte, p_tipo_atendimento: tipoAtendimento }),
@@ -37,8 +39,16 @@ export function useDashboardMetrics({ horizonte = 30, tipoAtendimento = null } =
         supabase.rpc('calcular_demanda_reprimida',      { p_horizonte_dias: horizonte, p_tipo_atendimento: tipoAtendimento, p_dias_limite: diasLimite }),
         supabase.rpc('fn_ocupacao_passada',             { p_dias_atras: horizonte,    p_tipo_atendimento: tipoAtendimento }),
         supabase.rpc('fn_ocupacao_futura',              { p_dias_a_frente: 7,         p_tipo_atendimento: tipoAtendimento }),
+        // Vagas em risco: futuros na janela configurada que ainda não foram confirmados
+        supabase
+          .from('appointments')
+          .select('id', { count: 'exact', head: true })
+          .eq('status', 'agendado')
+          .gte('scheduled_at', new Date().toISOString())
+          .lte('scheduled_at', new Date(Date.now() + vagasRiscoHoras * 3_600_000).toISOString()),
       ])
 
+      // Erros fatais: apenas nas 8 RPCs de negócio — vagasRisco é não-fatal
       const anyError = [absenteismo, espera, confirmacao, reaproveitamento, satisfacao, demandaReprimida, ocupacaoPassada, ocupacaoFutura].find(r => r.error)
       if (anyError?.error) throw anyError.error
 
@@ -62,6 +72,23 @@ export function useDashboardMetrics({ horizonte = 30, tipoAtendimento = null } =
       const futComprom  = ocupRowsFuturos.reduce((s, r) => s + Number(r.vagas_comprometidas), 0)
       const futValue    = futCapTotal > 0 ? Math.round((futComprom / futCapTotal) * 100) : 0
 
+      // Vagas em risco: agendamentos 'agendado' dentro da janela configurável
+      const riscoCount = vagasRisco.error ? 0 : (vagasRisco.count ?? 0)
+
+      // Debug: valida consistência dos KPIs após importação de CSV
+      console.table({
+        absenteismo_pct:   absValue,
+        espera_dias:       esperaValue,
+        confirmacao_pct:   confValue,
+        reaprov_pct:       reapValue,
+        satisfacao_nota:   satValue,
+        demanda_rep:       demandaValue,
+        cap_historica_pct: capValue,
+        cap_futura_pct:    futValue,
+        vagas_em_risco:    riscoCount,
+        janela_risco_h:    vagasRiscoHoras,
+      })
+
       setMetrics({
         absenteismo:          { valor: absValue,     status: calcularStatus(absValue,     configs.absenteismo_taxa)          },
         espera:               { valor: esperaValue,  status: calcularStatus(esperaValue,  configs.espera_media_dias)         },
@@ -71,7 +98,7 @@ export function useDashboardMetrics({ horizonte = 30, tipoAtendimento = null } =
         confirmacao_ativa:    { valor: confValue,    status: calcularStatus(confValue,    configs.confirmacao_ativa_taxa)    },
         reaproveitamento:     { valor: reapValue,    status: calcularStatus(reapValue,    configs.reaproveitamento_taxa)     },
         satisfacao:           { valor: satValue,     status: calcularStatus(satValue,     configs.satisfacao_meta)           },
-        vagas_em_risco:       { valor: 0,            status: 'ok' },
+        vagas_em_risco:       { valor: riscoCount,   status: riscoCount === 0 ? 'ok' : riscoCount <= 3 ? 'atencao' : 'critico' },
         equipamentos_ociosos: { valor: ociosos,      status: ociosos > 0 ? 'atencao' : 'ok' },
       })
     } catch (err) {
@@ -83,6 +110,23 @@ export function useDashboardMetrics({ horizonte = 30, tipoAtendimento = null } =
   }, [horizonte, tipoAtendimento, configs])
 
   useEffect(() => { fetch() }, [fetch])
+
+  // Ref estável apontando sempre para a função fetch mais recente.
+  // Permite criar o canal Realtime uma única vez (sem re-subscrição a cada mudança de deps).
+  const fetchRef = useRef(null)
+  useEffect(() => { fetchRef.current = fetch }, [fetch])
+
+  // Realtime: qualquer alteração em appointments ou queue_entries recarrega as métricas.
+  // Deps vazios: canal criado uma vez, nunca re-subscrito desnecessariamente.
+  useEffect(() => {
+    const channel = supabase
+      .channel('dashboard-metrics-realtime')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'appointments' },  () => fetchRef.current?.())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'queue_entries' }, () => fetchRef.current?.())
+      .subscribe()
+
+    return () => { supabase.removeChannel(channel) }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   return { metrics, loading, error, refresh: fetch }
 }

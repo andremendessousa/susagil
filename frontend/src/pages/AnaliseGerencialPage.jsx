@@ -119,7 +119,8 @@ export default function AnaliseGerencialPage() {
   }, [])
 
   // ─── Painel 4: Reaproveitamento de vagas ─────────────────────────────────
-  const [reaprovData, setReaprovData] = useState({ faltas: 0, reaproveitados: 0 })
+  // cancelados: denominador correto — cancelamento antecipado é oportunidade de gestão, não falta
+  const [reaprovData, setReaprovData] = useState({ cancelados: 0, reaproveitados: 0, taxa: 0 })
   const [loadingReaprov, setLoadingReaprov] = useState(true)
   const [reaprovTick, setReaprovTick] = useState(0)       // incrementado pelo realtime
   const [vagasRecuperadas, setVagasRecuperadas] = useState(0)
@@ -127,27 +128,30 @@ export default function AnaliseGerencialPage() {
   useEffect(() => {
     let mounted = true
     async function fetchReaprov() {
+      // Aguarda configs para obter a janela hábil configurada no banco
+      if (!configs) return
       setLoadingReaprov(true)
       try {
-        const dataLimite = new Date(Date.now() - horizonte * 24 * 60 * 60 * 1000).toISOString()
+        const janelaHoras = configs?.reaproveitamento_janela_horas?.valor_meta ?? 48
 
-        const [faltasRes, reaprovRes] = await Promise.all([
-          supabase
-            .from('appointments')
-            .select('id', { count: 'exact', head: true })
-            .eq('status', 'faltou')
-            .gte('scheduled_at', dataLimite),
-          supabase
-            .from('appointments')
-            .select('id', { count: 'exact', head: true })
-            .not('reaproveitado_de_id', 'is', null)
-            .gte('scheduled_at', dataLimite),
-        ])
+        const { data, error } = await supabase.rpc('calcular_taxa_reaproveitamento', {
+          p_horizonte_dias: horizonte,
+          p_janela_horas:   janelaHoras,
+        })
 
         if (!mounted) return
+        if (error) {
+          console.error('[fetchReaprov]', error.message)
+          return
+        }
+
+        // Debug: valida denominador e janela após importação CSV
+        console.table([{ ...data, _contexto: `${horizonte}d / janela ${janelaHoras}h` }])
+
         setReaprovData({
-          faltas:         faltasRes.count ?? 0,
-          reaproveitados: reaprovRes.count ?? 0,
+          cancelados:    data?.vagas_canceladas_total  ?? 0,
+          reaproveitados: data?.vagas_reaproveitadas   ?? 0,
+          taxa:          data?.taxa_reaproveitamento  ?? 0,
         })
       } finally {
         if (mounted) setLoadingReaprov(false)
@@ -155,7 +159,7 @@ export default function AnaliseGerencialPage() {
     }
     fetchReaprov()
     return () => { mounted = false }
-  }, [horizonte, reaprovTick])
+  }, [horizonte, reaprovTick, configs])
 
   // Realtime: captura cancelamentos (UPDATE) E reaproveitamentos (INSERT com reaproveitado_de_id)
   useEffect(() => {
@@ -189,9 +193,8 @@ export default function AnaliseGerencialPage() {
     return () => supabase.removeChannel(channel)
   }, [])
 
-  const taxaReaprov = reaprovData.faltas > 0
-    ? ((reaprovData.reaproveitados / reaprovData.faltas) * 100).toFixed(1)
-    : '0.0'
+  // Taxa vem direto da RPC — denominador = cancelamentos (não faltas)
+  const taxaReaprov    = Number(reaprovData.taxa).toFixed(1)
   const taxaReaprovNum = parseFloat(taxaReaprov)
   const metaReaprov    = configs?.reaproveitamento_taxa?.valor_meta ?? 70
 
@@ -428,7 +431,7 @@ export default function AnaliseGerencialPage() {
               <p className="text-sm text-gray-500 mt-2">
                 {Number(reaprovData.reaproveitados).toLocaleString('pt-BR')} vagas recuperadas
                 {' '}de{' '}
-                {Number(reaprovData.faltas).toLocaleString('pt-BR')} faltas
+                {Number(reaprovData.cancelados).toLocaleString('pt-BR')} cancelamentos
               </p>
             </div>
             <div className="w-full max-w-xs">
