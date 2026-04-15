@@ -135,8 +135,9 @@ export default function AnaliseGerencialPage() {
         const janelaHoras = configs?.reaproveitamento_janela_horas?.valor_meta ?? 48
 
         const { data, error } = await supabase.rpc('calcular_taxa_reaproveitamento', {
-          p_horizonte_dias: horizonte,
-          p_janela_horas:   janelaHoras,
+          p_horizonte_dias:   horizonte,
+          p_janela_horas:     janelaHoras,
+          p_tipo_atendimento: null,   // força resolução da sobrecarga de 3 parâmetros
         })
 
         if (!mounted) return

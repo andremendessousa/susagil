@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import {
-  MessageSquare, Search, CheckCheck, Clock, X, Send,
-  Bot, Phone, Video, MoreVertical, Loader, Check,
+  MessageSquare, Search, CheckCheck, Clock, X,
+  Phone, Video, MoreVertical, Loader, Check, AlertTriangle, Lock,
 } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 import { executarReaproveitamento } from '../lib/orquestracao'
@@ -40,17 +40,13 @@ function mascaraCNS(cns) {
 // Gera texto da mensagem do sistema a partir do notification_log
 function gerarMensagemSistema(notif) {
   if (notif.mensagem) return notif.mensagem
-  const nome     = notif.paciente_nome ?? 'paciente'
-  const proc     = notif.equipamento_nome ?? 'procedimento'
-  const dataStr  = notif.scheduled_at ? formatarDataHora(notif.scheduled_at) : 'data a confirmar'
-  const prefixos = {
-    '72h':           '⏰ Lembrete (72h)',
-    '24h':           '⚡ Urgente (24h)',
-    '2h':            '🚨 Confirmação final (2h)',
-    lembrete_manual: '📋 Lembrete',
-  }
-  const prefixo = prefixos[notif.tipo] ?? '📢 Aviso'
-  return `${prefixo}: Olá, ${nome}! Você tem ${proc} agendado para ${dataStr}.\n\nPor favor, confirme sua presença respondendo *SIM* ou *CANCELAR*.`
+  const nome    = notif.paciente_nome ?? 'paciente'
+  const proc    = notif.equipamento_nome ?? 'procedimento'
+  const dataStr = notif.scheduled_at ? formatarDataHora(notif.scheduled_at) : 'data a confirmar'
+  const urgencia = notif.tipo === '2h'
+    ? '\n\n🚨 *ATENÇÃO:* Confirmação necessária em até 2 horas.'
+    : ''
+  return `Assistente Virtual da Saúde de Montes Claros 🏥\n\nOlá, ${nome}! Identifiquei uma pendência para o seu procedimento:\n📋 *${proc}*\n📅 Data agendada: *${dataStr}*${urgencia}\n\nPor favor, confirme sua presença com uma das opções abaixo:\n\n*[1 - SIM, CONFIRMO]* minha presença\n*[2 - NÃO, PRECISO CANCELAR]* este agendamento`
 }
 
 const RESPOSTA_TEXT = {
@@ -160,28 +156,15 @@ function PatientBubble({ text, time }) {
 }
 
 // Balão de evento do sistema (amarelo, centralizado)
-function EventBubble({ text }) {
+function EventBubble({ text, warning }) {
   return (
     <div className="flex justify-center my-3">
-      <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-2 text-xs text-amber-800 text-center max-w-sm shadow-sm leading-relaxed">
+      <div className={`border rounded-xl px-4 py-2 text-xs text-center max-w-sm shadow-sm leading-relaxed whitespace-pre-wrap ${
+        warning
+          ? 'bg-red-50 border-red-200 text-red-800'
+          : 'bg-amber-50 border-amber-200 text-amber-800'
+      }`}>
         {text}
-      </div>
-    </div>
-  )
-}
-
-// Balão do bot (azul, esquerda, com ícone de robô)
-function BotBubble({ text, time }) {
-  return (
-    <div className="flex justify-start mb-2 gap-2 items-end">
-      <div className="flex-shrink-0 w-7 h-7 rounded-full bg-blue-600 flex items-center justify-center mb-0.5">
-        <Bot size={13} className="text-white" />
-      </div>
-      <div className="max-w-[60%]">
-        <div className="bg-white border border-blue-100 rounded-lg rounded-tl-none px-3 py-2 shadow-sm text-sm text-gray-900 whitespace-pre-wrap">
-          {text}
-        </div>
-        <p className="text-[10px] text-gray-400 mt-0.5">{time}</p>
       </div>
     </div>
   )
@@ -212,43 +195,109 @@ export default function WhatsappPage() {
   const [chatNotifs, setChatNotifs]   = useState([])
   const [loadingChat, setLoadingChat] = useState(false)
   const [savingId, setSavingId]       = useState(null)
+  // Double-check: ID da notif aguardando 2ª confirmação de desistência
+  const [doubleCheckId, setDoubleCheckId] = useState(null)
+  // Modo leitura: true após cancelamento confirmado e orquestração concluída
+  const [readOnly, setReadOnly]           = useState(false)
+  const [readOnlyProto, setReadOnlyProto] = useState(null)
 
   // Mensagens de evento local (orquestração) — não persistidas no banco
   const [eventMsgs, setEventMsgs]     = useState({}) // { [notif.id]: string }
 
-  // ── Bot / input livre ───────────────────────────────────────────────────────
-  const [inputText, setInputText]     = useState('')
-  const [botMessages, setBotMessages] = useState([]) // { text, time, isBotReply }
-  const [botLoading, setBotLoading]   = useState(false)
-
-  const chatEndRef  = useRef(null)
-  const inputRef    = useRef(null)
+  const chatEndRef = useRef(null)
 
   // ── Fetch contacts ─────────────────────────────────────────────────────────
   const fetchContacts = useCallback(async () => {
     setLoadingContacts(true)
-    const { data, error } = await supabase
-      .from('notification_log')
-      .select(`
-        id, patient_id, tipo, canal, enviado_at, respondido_at,
-        resposta_paciente, entregue, appointment_id, mensagem,
-        patients ( id, nome, cns, telefone ),
-        appointments ( scheduled_at, equipment ( nome ) )
-      `)
-      .order('enviado_at', { ascending: false })
-      .limit(300)
 
-    if (!error) {
-      const normalized = (data ?? []).map(n => ({
-        ...n,
-        paciente_nome:    n.patients?.nome ?? '—',
-        cns:              n.patients?.cns  ?? null,
-        telefone:         n.patients?.telefone ?? null,
-        scheduled_at:     n.appointments?.scheduled_at ?? null,
-        equipamento_nome: n.appointments?.equipment?.nome ?? null,
-      }))
-      setAllNotifs(normalized)
+    // Dois queries paralelos:
+    // 1) notification_log — histórico de conversas e estado de resposta
+    // 2) appointments ativos futuros — inclui pacientes pendentes que ainda não foram notificados
+    const [notifRes, apptRes] = await Promise.all([
+      supabase
+        .from('notification_log')
+        .select(`
+          id, patient_id, tipo, canal, enviado_at, respondido_at,
+          resposta_paciente, entregue, appointment_id, mensagem,
+          patients ( id, nome, cns, telefone ),
+          appointments ( scheduled_at, equipment ( nome ) )
+        `)
+        .order('enviado_at', { ascending: false })
+        .limit(300),
+
+      supabase
+        .from('appointments')
+        .select(`
+          id, scheduled_at,
+          queue_entries ( patient_id, patients ( id, nome, cns, telefone ) ),
+          equipment ( nome )
+        `)
+        .in('status', ['agendado', 'confirmado'])
+        .gte('scheduled_at', new Date().toISOString())
+        .order('scheduled_at', { ascending: true })
+        .limit(200),
+    ])
+
+    // Indexa a notificação mais recente por patient_id
+    const notifByPatient = new Map()
+    for (const n of (notifRes.data ?? [])) {
+      const pid = n.patient_id
+      if (!notifByPatient.has(pid)) {
+        notifByPatient.set(pid, {
+          ...n,
+          paciente_nome:    n.patients?.nome ?? '—',
+          cns:              n.patients?.cns  ?? null,
+          telefone:         n.patients?.telefone ?? null,
+          scheduled_at:     n.appointments?.scheduled_at ?? null,
+          equipamento_nome: n.appointments?.equipment?.nome ?? null,
+        })
+      }
     }
+
+    // Constrói lista: um item por patient_id, priorizando agendamentos futuros
+    const seen = new Set()
+    const merged = []
+
+    for (const appt of (apptRes.data ?? [])) {
+      const pid = appt.queue_entries?.patient_id
+      if (!pid || seen.has(pid)) continue
+      seen.add(pid)
+
+      const notif = notifByPatient.get(pid)
+      merged.push({
+        id:                notif?.id ?? null,
+        patient_id:        pid,
+        tipo:              notif?.tipo ?? null,
+        canal:             notif?.canal ?? 'whatsapp',
+        enviado_at:        notif?.enviado_at ?? appt.scheduled_at,
+        respondido_at:     notif?.respondido_at ?? null,
+        resposta_paciente: notif?.resposta_paciente ?? null,
+        entregue:          notif?.entregue ?? null,
+        appointment_id:    notif?.appointment_id ?? appt.id,
+        mensagem:          notif?.mensagem ?? null,
+        paciente_nome:     appt.queue_entries?.patients?.nome ?? notif?.paciente_nome ?? '—',
+        cns:               appt.queue_entries?.patients?.cns  ?? notif?.cns  ?? null,
+        telefone:          appt.queue_entries?.patients?.telefone ?? notif?.telefone ?? null,
+        scheduled_at:      appt.scheduled_at,
+        equipamento_nome:  appt.equipment?.nome ?? notif?.equipamento_nome ?? null,
+      })
+    }
+
+    // Adiciona contatos históricos (notificados, mas sem agendamento futuro ativo)
+    for (const [pid, notif] of notifByPatient) {
+      if (seen.has(pid)) continue
+      merged.push(notif)
+    }
+
+    // Pendentes primeiro; depois por enviado_at mais recente
+    merged.sort((a, b) => {
+      const aPend = !a.resposta_paciente
+      const bPend = !b.resposta_paciente
+      if (aPend !== bPend) return aPend ? -1 : 1
+      return new Date(b.enviado_at ?? 0) - new Date(a.enviado_at ?? 0)
+    })
+
+    setAllNotifs(merged)
     setLoadingContacts(false)
   }, [])
 
@@ -259,17 +308,20 @@ export default function WhatsappPage() {
     const channel = supabase
       .channel('whatsapp-contacts-rt')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'notification_log' }, fetchContacts)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'appointments' },    fetchContacts)
       .subscribe()
     return () => supabase.removeChannel(channel)
   }, [fetchContacts])
 
   // ── Contacts derivados (dedup + filtro) ────────────────────────────────────
-  const contacts = deduplicarPorPaciente(allNotifs).filter(n => {
+  // allNotifs já vem deduplicado por patient_id (um item por paciente)
+  const contacts = allNotifs.filter(n => {
     if (!search.trim()) return true
-    const q = search.toLowerCase()
+    const q       = search.toLowerCase()
+    const qDigits = q.replace(/\D/g, '')
     return (
       n.paciente_nome.toLowerCase().includes(q) ||
-      (n.cns && String(n.cns).replace(/\D/g, '').includes(q.replace(/\D/g, '')))
+      (n.cns && qDigits.length > 0 && String(n.cns).replace(/\D/g, '').includes(qDigits))
     )
   })
 
@@ -307,8 +359,10 @@ export default function WhatsappPage() {
   }, [selectedPatientId])
 
   useEffect(() => {
-    setBotMessages([])
     setEventMsgs({})
+    setDoubleCheckId(null)
+    setReadOnly(false)
+    setReadOnlyProto(null)
     fetchChat()
   }, [fetchChat])
 
@@ -328,12 +382,11 @@ export default function WhatsappPage() {
   // Auto-scroll ao final do chat
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [chatNotifs, botMessages, eventMsgs])
+  }, [chatNotifs, eventMsgs])
 
   // ── Selecionar contato ────────────────────────────────────────────────────
   function handleSelectContact(patientId) {
     setSelectedPatientId(patientId)
-    setTimeout(() => inputRef.current?.focus(), 100)
   }
 
   // ── Confirmar presença ────────────────────────────────────────────────────
@@ -352,14 +405,35 @@ export default function WhatsappPage() {
           .eq('id', notif.appointment_id)
       }
     } finally {
-      setSavingId(null)
       await Promise.all([fetchChat(), fetchContacts()])
+      setSavingId(null)
     }
   }
 
-  // ── Cancelar e acionar orquestração ───────────────────────────────────────
-  async function handleCancelar(notif) {
+  // ── Cancelar: 1ª etapa — solicita double-check ────────────────────────────
+  function handleCancelar(notif) {
+    setDoubleCheckId(notif.id)
+    setEventMsgs(prev => ({
+      ...prev,
+      [notif.id + '_dc']:
+        '⚠️ ATENÇÃO: O cancelamento liberará sua vaga para outro paciente da fila.\n\nDeseja realmente confirmar a desistência deste agendamento?',
+    }))
+  }
+
+  // ── Cancelar: volta atrás — mantém a vaga ─────────────────────────────────
+  function handleVoltarManter() {
+    setEventMsgs(prev => {
+      const next = { ...prev }
+      if (doubleCheckId) delete next[doubleCheckId + '_dc']
+      return next
+    })
+    setDoubleCheckId(null)
+  }
+
+  // ── Cancelar: 2ª etapa — executa cancelamento + orquestração ──────────────
+  async function handleCancelarConfirmado(notif) {
     setSavingId(notif.id)
+    setDoubleCheckId(null)
     try {
       await supabase
         .from('notification_log')
@@ -374,110 +448,30 @@ export default function WhatsappPage() {
 
         const { nomeConvocado, erro } = await executarReaproveitamento(notif.appointment_id)
 
-        const msg = nomeConvocado
-          ? `⚠️ Vaga liberada. Motor de orquestração convocou automaticamente ${nomeConvocado} do topo da fila.`
+        const orchMsg = nomeConvocado
+          ? `✅ Vaga liberada. Motor de orquestração convocou automaticamente *${nomeConvocado}* do topo da fila.`
           : erro
             ? `⚠️ Vaga liberada. Orquestração não pôde convocar próximo: ${erro}`
             : '⚠️ Vaga liberada. Nenhum paciente aguardando na fila para este procedimento no momento.'
 
-        setEventMsgs(prev => ({ ...prev, [notif.id]: msg }))
+        const proto = `Protocolo de cancelamento nº ${notif.appointment_id.slice(0, 8).toUpperCase()} concluído.\nVaga redirecionada pelo motor de eficiência.`
+
+        setEventMsgs(prev => {
+          const next = { ...prev }
+          delete next[notif.id + '_dc']
+          return { ...next, [notif.id]: orchMsg }
+        })
+        setReadOnlyProto(proto)
+        setReadOnly(true)
       }
     } finally {
-      setSavingId(null)
       await Promise.all([fetchChat(), fetchContacts()])
-    }
-  }
-
-  // ── Bot: consulta por CNS ou mensagem livre ────────────────────────────────
-  async function handleSend() {
-    const text = inputText.trim()
-    if (!text || botLoading) return
-    setInputText('')
-
-    const hora = formatarHora(new Date().toISOString())
-    const digits = text.replace(/\D/g, '')
-
-    if (digits.length === 15) {
-      // CNS detectado — modo bot
-      setBotMessages(prev => [...prev, { text, time: hora, isBotReply: false }])
-      setBotLoading(true)
-
-      setTimeout(async () => {
-        try {
-          const { data: patient } = await supabase
-            .from('patients')
-            .select('id, nome')
-            .eq('cns', digits)
-            .maybeSingle()
-
-          if (!patient) {
-            setBotMessages(prev => [...prev, {
-              text: `Não encontrei nenhum paciente com o CNS ${mascaraCNS(digits)} no sistema. Verifique o número e tente novamente.`,
-              time: formatarHora(new Date().toISOString()),
-              isBotReply: true,
-            }])
-            return
-          }
-
-          // Posição na fila — filtra por procedimento do paciente
-          const { data: filaItems } = await supabase
-            .from('v_dashboard_fila')
-            .select('patient_id, nome_grupo_procedimento, prioridade_codigo, data_solicitacao_sisreg, dias_na_fila')
-            .eq('status_local', 'aguardando')
-            .eq('patient_id', patient.id)
-            .order('prioridade_codigo', { ascending: true })
-            .limit(1)
-
-          const entrada = filaItems?.[0] ?? null
-
-          if (!entrada) {
-            setBotMessages(prev => [...prev, {
-              text: `Olá, ${patient.nome}! 👋\n\nNão encontrei sua solicitação na fila de espera. Seu pedido pode estar já agendado ou realizado.\n\nConsulte o serviço de regulação para mais informações.`,
-              time: formatarHora(new Date().toISOString()),
-              isBotReply: true,
-            }])
-            return
-          }
-
-          // Calcular posição relativa dentro do procedimento
-          const { data: todos } = await supabase
-            .from('v_dashboard_fila')
-            .select('patient_id')
-            .eq('status_local', 'aguardando')
-            .eq('nome_grupo_procedimento', entrada.nome_grupo_procedimento)
-            .order('prioridade_codigo', { ascending: true })
-            .order('data_solicitacao_sisreg', { ascending: true })
-
-          const posicao = ((todos ?? []).findIndex(r => r.patient_id === patient.id) + 1) || '—'
-          const diasNaFila = entrada.dias_na_fila ?? 0
-          const previsao   = Math.max(1, Math.round(diasNaFila * 0.6))
-
-          setBotMessages(prev => [...prev, {
-            text: `Olá, ${patient.nome}! 👋\n\n📋 *Procedimento:* ${entrada.nome_grupo_procedimento ?? '—'}\n🏥 *Posição na fila:* ${posicao}º lugar\n⏳ *Dias aguardando:* ${diasNaFila} dias\n📅 *Previsão estimada:* ${previsao} dias\n\nAssim que uma vaga for liberada, você será notificado automaticamente pelo SUS Montes Claros.`,
-            time: formatarHora(new Date().toISOString()),
-            isBotReply: true,
-          }])
-        } catch (err) {
-          setBotMessages(prev => [...prev, {
-            text: 'Ocorreu um erro ao consultar o sistema. Tente novamente em instantes.',
-            time: formatarHora(new Date().toISOString()),
-            isBotReply: true,
-          }])
-          console.error('[BotCNS]', err)
-        } finally {
-          setBotLoading(false)
-        }
-      }, 1000)
-    } else {
-      // Mensagem livre — aparece como balão do sistema
-      setBotMessages(prev => [...prev, { text, time: hora, isBotReply: false }])
+      setSavingId(null)
     }
   }
 
   // Notificação pendente mais recente do paciente selecionado
   const pendingNotif = [...chatNotifs].reverse().find(n => !n.resposta_paciente) ?? null
-
-  const isCNS = inputText.replace(/\D/g, '').length === 15
 
   // ── Render ──────────────────────────────────────────────────────────────────
   return (
@@ -605,7 +599,7 @@ export default function WhatsappPage() {
               </div>
             ) : (
               <>
-                {chatNotifs.length === 0 && botMessages.length === 0 ? (
+                {chatNotifs.length === 0 ? (
                   <div className="flex justify-center py-8">
                     <p className="text-[11px] text-gray-600 bg-white/70 px-3 py-1.5 rounded-full shadow-sm">
                       Nenhuma mensagem ainda
@@ -641,36 +635,19 @@ export default function WhatsappPage() {
                             />
                           )}
 
-                          {/* Evento de orquestração (só se cancelou) */}
-                          {eventMsgs[notif.id] && (
-                            <EventBubble text={eventMsgs[notif.id]} />
-                          )}
                         </div>
                       )
                     })}
 
-                    {/* Mensagens do bot / livres */}
-                    {botMessages.length > 0 && (
-                      <DateDivider label="Sessão atual" />
-                    )}
-                    {botMessages.map((m, i) =>
-                      m.isBotReply
-                        ? <BotBubble key={i} text={m.text} time={m.time} />
-                        : <SysBubble key={i} text={m.text} time={m.time} />
-                    )}
-
-                    {botLoading && (
-                      <div className="flex items-center gap-2 text-xs text-gray-500 pl-1 mb-2">
-                        <div className="w-7 h-7 rounded-full bg-blue-600 flex items-center justify-center">
-                          <Bot size={13} className="text-white" />
-                        </div>
-                        <div className="bg-white rounded-lg px-3 py-2 text-sm shadow-sm border border-gray-100 flex items-center gap-1.5">
-                          <span className="w-1.5 h-1.5 rounded-full bg-gray-400 animate-bounce" style={{ animationDelay: '0ms' }} />
-                          <span className="w-1.5 h-1.5 rounded-full bg-gray-400 animate-bounce" style={{ animationDelay: '150ms' }} />
-                          <span className="w-1.5 h-1.5 rounded-full bg-gray-400 animate-bounce" style={{ animationDelay: '300ms' }} />
-                        </div>
-                      </div>
-                    )}
+                    {/* Eventos ao FINAL — nunca no meio da conversa */}
+                    {Object.entries(eventMsgs)
+                      .filter(([k]) => k.endsWith('_dc'))
+                      .map(([k, text]) => <EventBubble key={k} text={text} warning />)
+                    }
+                    {Object.entries(eventMsgs)
+                      .filter(([k]) => !k.endsWith('_dc'))
+                      .map(([k, text]) => <EventBubble key={k} text={text} />)
+                    }
                   </>
                 )}
                 <div ref={chatEndRef} />
@@ -679,69 +656,100 @@ export default function WhatsappPage() {
           </div>
 
           {/* Botões de ação para notificação pendente */}
-          {pendingNotif && (
+          {pendingNotif && !readOnly && (
             <div
               className="flex-shrink-0 px-4 py-2.5 flex flex-col gap-2"
               style={{ backgroundColor: '#f0f2f5', borderTop: '1px solid #e9edef' }}
             >
-              <p className="text-[10px] text-gray-500 flex items-center gap-1.5">
-                <Clock size={10} />
-                Aguardando resposta do paciente — simule a interação:
-              </p>
-              <div className="flex gap-2">
-                <button
-                  onClick={() => handleConfirmar(pendingNotif)}
-                  disabled={!!savingId}
-                  className="flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-semibold bg-green-600 text-white hover:bg-green-700 transition-colors disabled:opacity-50 shadow-sm"
-                >
-                  {savingId === pendingNotif.id
-                    ? <Loader size={12} className="animate-spin" />
-                    : <Check size={12} />}
-                  SIM, CONFIRMO
-                </button>
-                <button
-                  onClick={() => handleCancelar(pendingNotif)}
-                  disabled={!!savingId}
-                  className="flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-semibold bg-white text-red-600 border border-red-200 hover:bg-red-50 transition-colors disabled:opacity-50 shadow-sm"
-                >
-                  {savingId === pendingNotif.id
-                    ? <Loader size={12} className="animate-spin" />
-                    : <X size={12} />}
-                  NÃO, CANCELAR
-                </button>
+              {doubleCheckId === pendingNotif.id ? (
+                /* ── DOUBLE-CHECK: confirmar desistência ── */
+                <>
+                  <p className="text-[10px] text-red-600 flex items-center gap-1.5 font-medium">
+                    <AlertTriangle size={10} />
+                    Confirme sua desistência — esta ação não pode ser desfeita:
+                  </p>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => handleCancelarConfirmado(pendingNotif)}
+                      disabled={!!savingId}
+                      className="flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-semibold bg-red-600 text-white hover:bg-red-700 transition-colors disabled:opacity-50 shadow-sm"
+                    >
+                      {savingId === pendingNotif.id
+                        ? <Loader size={12} className="animate-spin" />
+                        : <X size={12} />}
+                      SIM, CONFIRMO DESISTÊNCIA
+                    </button>
+                    <button
+                      onClick={handleVoltarManter}
+                      disabled={!!savingId}
+                      className="flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-semibold bg-white text-green-700 border border-green-300 hover:bg-green-50 transition-colors disabled:opacity-50 shadow-sm"
+                    >
+                      <Check size={12} />
+                      VOLTAR / MANTER VAGA
+                    </button>
+                  </div>
+                </>
+              ) : (
+                /* ── NORMAL: confirmar ou iniciar cancelamento ── */
+                <>
+                  <p className="text-[10px] text-gray-500 flex items-center gap-1.5">
+                    <Clock size={10} />
+                    Aguardando resposta do paciente — simule a interação:
+                  </p>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => handleConfirmar(pendingNotif)}
+                      disabled={!!savingId}
+                      className="flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-semibold bg-green-600 text-white hover:bg-green-700 transition-colors disabled:opacity-50 shadow-sm"
+                    >
+                      {savingId === pendingNotif.id
+                        ? <Loader size={12} className="animate-spin" />
+                        : <Check size={12} />}
+                      SIM, CONFIRMO
+                    </button>
+                    <button
+                      onClick={() => handleCancelar(pendingNotif)}
+                      disabled={!!savingId}
+                      className="flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-semibold bg-white text-red-600 border border-red-200 hover:bg-red-50 transition-colors disabled:opacity-50 shadow-sm"
+                    >
+                      {savingId === pendingNotif.id
+                        ? <Loader size={12} className="animate-spin" />
+                        : <X size={12} />}
+                      NÃO, CANCELAR
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+
+          {/* Barra de protocolo de cancelamento (modo leitura) */}
+          {readOnly && readOnlyProto && (
+            <div
+              className="flex-shrink-0 px-4 py-3"
+              style={{ backgroundColor: '#f0f2f5', borderTop: '1px solid #e9edef' }}
+            >
+              <div className="bg-white border border-gray-200 rounded-xl px-4 py-2.5 text-xs text-gray-600 leading-relaxed shadow-sm">
+                <p className="font-semibold text-gray-700 mb-0.5">🔒 Conversa encerrada</p>
+                <p className="text-gray-500 whitespace-pre-wrap">{readOnlyProto}</p>
               </div>
             </div>
           )}
 
-          {/* Input de mensagem */}
+          {/* Barra de modo simulação */}
           <div
-            className="flex-shrink-0 px-3 py-3 flex items-center gap-2"
+            className="flex-shrink-0 px-4 py-2"
             style={{ backgroundColor: '#f0f2f5', borderTop: '1px solid #e9edef' }}
           >
-            <div className="flex-1 relative">
-              <input
-                ref={inputRef}
-                value={inputText}
-                onChange={e => setInputText(e.target.value)}
-                onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend() } }}
-                placeholder={
-                  isCNS
-                    ? '✓ CNS detectado — pressione Enter para consultar a fila'
-                    : 'Digite um CNS (15 dígitos) para consulta ou envie uma mensagem…'
-                }
-                className="w-full px-4 py-2.5 text-sm bg-white rounded-full border-0 focus:outline-none focus:ring-1 focus:ring-green-500 pr-10"
-              />
-              {isCNS && (
-                <Bot size={15} className="absolute right-4 top-1/2 -translate-y-1/2 text-blue-500" />
-              )}
+            <div className="flex items-center gap-2">
+              <div className="w-5 h-5 rounded-full bg-gray-300 flex items-center justify-center flex-shrink-0">
+                <Lock size={10} className="text-gray-500" />
+              </div>
+              <p className="text-[11px] text-gray-500 leading-tight">
+                <span className="font-semibold text-gray-600">Modo Simulação</span>
+                {' '}— interface restrita. Use os botões acima para simular a resposta do paciente.
+              </p>
             </div>
-            <button
-              onClick={handleSend}
-              disabled={!inputText.trim() || botLoading}
-              className="w-10 h-10 rounded-full bg-green-600 hover:bg-green-700 flex items-center justify-center transition-colors disabled:opacity-40 shadow-sm flex-shrink-0"
-            >
-              <Send size={16} className="text-white" />
-            </button>
           </div>
 
         </div>

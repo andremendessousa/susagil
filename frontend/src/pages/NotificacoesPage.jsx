@@ -193,11 +193,12 @@ export default function NotificacoesPage() {
     setLoadingVagas(true)
     const limite = new Date(Date.now() + horasConfig * 60 * 60 * 1000).toISOString()
 
+    // appointments não tem patient_id direto — navega via queue_entries
     const { data, error } = await supabase
       .from('appointments')
       .select(`
         id, scheduled_at, st_paciente_avisado,
-        patients ( id, nome, telefone ),
+        queue_entries ( patient_id, patients ( id, nome, telefone ) ),
         equipment ( nome )
       `)
       .eq('status', 'agendado')
@@ -210,10 +211,10 @@ export default function NotificacoesPage() {
       setVagasEmRisco(
         (data || []).map((a) => ({
           ...a,
-          paciente_nome:    a.patients?.nome     ?? '—',
-          paciente_id:      a.patients?.id       ?? null,
-          telefone:         a.patients?.telefone ?? null,
-          equipamento_nome: a.equipment?.nome    ?? '—',
+          paciente_nome:    a.queue_entries?.patients?.nome     ?? '—',
+          paciente_id:      a.queue_entries?.patients?.id       ?? null,
+          telefone:         a.queue_entries?.patients?.telefone ?? null,
+          equipamento_nome: a.equipment?.nome ?? '—',
         }))
       )
     }
@@ -248,27 +249,19 @@ export default function NotificacoesPage() {
       } else {
         // ── ORQUESTRAÇÃO INTELIGENTE (via módulo centralizado) ────────────────
 
-        // 2 — Cancela agendamento atual e busca detalhes em paralelo
-        const [, apptRes] = await Promise.all([
-          notif.appointment_id
-            ? supabase
-                .from('appointments')
-                .update({ status: 'cancelado' })
-                .eq('id', notif.appointment_id)
-            : Promise.resolve(),
-          notif.appointment_id
-            ? supabase
-                .from('appointments')
-                .select('scheduled_at, equipment_id')
-                .eq('id', notif.appointment_id)
-                .single()
-            : Promise.resolve({ data: null }),
-        ])
+        // 2 — Cancela agendamento atual
+        // (o RPC trata queue_entries; aqui só atualizamos appointments.status)
+        if (notif.appointment_id) {
+          await supabase
+            .from('appointments')
+            .update({ status: 'cancelado' })
+            .eq('id', notif.appointment_id)
+        }
 
         // 3 — Delega ao módulo centralizado de reaproveitamento
-        const { nomeConvocado } = notif.appointment_id
+        const { nomeConvocado, erro } = notif.appointment_id
           ? await executarReaproveitamento(notif.appointment_id)
-          : { nomeConvocado: null }
+          : { nomeConvocado: null, erro: null }
 
         setAlertaCancelamento(notif.paciente_nome)
 
@@ -277,8 +270,11 @@ export default function NotificacoesPage() {
             `Vaga reocupada automaticamente! Paciente ${nomeConvocado} convocado do topo da fila.`,
             true
           )
+        } else if (erro) {
+          showToast(`Cancelamento registrado — orquestração falhou: ${erro}`)
+          console.error('[NotificacoesPage] reaproveitamento:', erro)
         } else {
-          showToast('Cancelamento registrado — vaga liberada para redistribuição')
+          showToast('Cancelamento registrado — fila vazia para este procedimento')
         }
       }
     } finally {
@@ -295,13 +291,15 @@ export default function NotificacoesPage() {
     const { error: errLog } = await supabase
       .from('notification_log')
       .insert({
-        patient_id:     vaga.paciente_id,
-        appointment_id: vaga.id,
-        tipo:           'lembrete_manual',
-        canal:          'whatsapp',
-        enviado_at:     new Date().toISOString(),
-        entregue:       false,
-        enviado_por:    user?.id ?? null,
+        patient_id:       vaga.paciente_id,
+        appointment_id:   vaga.id,
+        tipo:             'lembrete_manual',
+        canal:            'whatsapp',
+        mensagem:         `Lembrete: você tem um agendamento em ${vaga.equipamento_nome} para ${formatarDataHora(vaga.scheduled_at)}. Confirme presença respondendo 1.`,
+        telefone_destino: vaga.telefone ?? '',
+        enviado_at:       new Date().toISOString(),
+        entregue:         false,
+        data_source:      'manual',
       })
 
     if (!errLog) {
@@ -322,13 +320,15 @@ export default function NotificacoesPage() {
     setSavingMassa(true)
 
     const registros = vagasEmRisco.map((v) => ({
-      patient_id:     v.paciente_id,
-      appointment_id: v.id,
+      patient_id:       v.paciente_id,
+      appointment_id:   v.id,
       tipo,
-      canal:          'whatsapp',
-      enviado_at:     new Date().toISOString(),
-      entregue:       false,
-      enviado_por:    user?.id ?? null,
+      canal:            'whatsapp',
+      mensagem:         `Lembrete: você tem um agendamento em ${v.equipamento_nome} para ${formatarDataHora(v.scheduled_at)}. Confirme presença respondendo 1.`,
+      telefone_destino: v.telefone ?? '',
+      enviado_at:       new Date().toISOString(),
+      entregue:         false,
+      data_source:      'manual',
     }))
 
     const { error: errLog } = await supabase

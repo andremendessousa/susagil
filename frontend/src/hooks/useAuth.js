@@ -11,7 +11,7 @@ export function useAuth() {
       .from('profiles')
       .select('*')
       .eq('user_id', userId)
-      .single()
+      .maybeSingle()
 
     if (error) {
       console.error('Erro ao buscar perfil:', error.message)
