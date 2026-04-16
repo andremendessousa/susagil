@@ -10,14 +10,15 @@ import { supabase } from './supabase'
  *   - Autorização: apenas usuários authenticated podem invocar o RPC
  *
  * @param {string} vagaCanceladaId  UUID do appointment que foi cancelado
- * @returns {{ nomeConvocado: string|null, erro: string|null }}
+ * @returns {{ nomeConvocado: string|null, erro: string|null, nivelFallback: number }}
+ *   nivelFallback: 0=strict (prod), 1=sem proc, 2=cross-UBS, -1=fila vazia
  */
 export async function executarReaproveitamento(vagaCanceladaId) {
   const TAG = '[orquestracao]'
 
   if (!vagaCanceladaId) {
     console.error(TAG, 'vagaCanceladaId não informado')
-    return { nomeConvocado: null, erro: 'ID da vaga não informado' }
+    return { nomeConvocado: null, erro: 'ID da vaga não informado', nivelFallback: -1 }
   }
 
   try {
@@ -28,26 +29,32 @@ export async function executarReaproveitamento(vagaCanceladaId) {
 
     if (error) {
       console.error(TAG, 'RPC retornou erro HTTP:', error.message, error.code)
-      return { nomeConvocado: null, erro: error.message }
+      return { nomeConvocado: null, erro: error.message, nivelFallback: -1 }
     }
 
     const result = data ?? {}
 
     if (result.erro) {
       console.error(TAG, 'Reaproveitamento retornou erro lógico:', result.erro)
-      return { nomeConvocado: null, erro: result.erro }
+      return { nomeConvocado: null, erro: result.erro, nivelFallback: -1 }
     }
+
+    const nivelFallback = result.nivel_fallback ?? 0
 
     if (result.nomeConvocado) {
-      console.log(TAG, `✓ Reaproveitamento concluído — convocado: "${result.nomeConvocado}"`)
+      const labels = ['critérios FIFO clínico completo', 'fallback UBS+tipo (proc ausente)', 'fallback geral (cross-UBS)']
+      console.log(TAG, `✓ Reaproveitamento nível ${nivelFallback} (${labels[nivelFallback] ?? '?'}) — convocado: "${result.nomeConvocado}"`)
+      if (nivelFallback > 0) {
+        console.warn(TAG, 'ATENÇÃO: convocação por fallback. Dados de qualidade garantem critérios clínicos completos.', result.diagnostico ?? {})
+      }
     } else {
-      console.debug(TAG, 'Reaproveitamento concluído — fila vazia para este procedimento')
+      console.debug(TAG, 'Fila vazia — diagnóstico:', result.diagnostico ?? {})
     }
 
-    return { nomeConvocado: result.nomeConvocado ?? null, erro: null }
+    return { nomeConvocado: result.nomeConvocado ?? null, erro: null, nivelFallback }
 
   } catch (err) {
     console.error(TAG, 'ERRO inesperado:', err.message)
-    return { nomeConvocado: null, erro: err.message }
+    return { nomeConvocado: null, erro: err.message, nivelFallback: -1 }
   }
 }

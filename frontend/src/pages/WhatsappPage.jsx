@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   MessageSquare, Search, CheckCheck, Clock, X,
-  Phone, Video, MoreVertical, Loader, Check, AlertTriangle, Lock,
+  Phone, Video, MoreVertical, Loader, Check, Lock,
+  Send, Bot, ShieldAlert, FileText, RefreshCw,
 } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 import { executarReaproveitamento } from '../lib/orquestracao'
@@ -37,16 +38,38 @@ function mascaraCNS(cns) {
   return `${s.slice(0, 3)} ${s.slice(3, 7)} ${s.slice(7, 11)} ${s.slice(11, 15)}`
 }
 
+// ─── Templates institucionais GovTech ────────────────────────────────────────
+
+const INST_HEADER = '[Assistente Virtual - Saúde Montes Claros]'
+const INST_FOOTER = '_Secretaria Municipal de Saúde — Montes Claros/MG_'
+
 // Gera texto da mensagem do sistema a partir do notification_log
 function gerarMensagemSistema(notif) {
   if (notif.mensagem) return notif.mensagem
-  const nome    = notif.paciente_nome ?? 'paciente'
-  const proc    = notif.equipamento_nome ?? 'procedimento'
+  const nome    = notif.paciente_nome ?? 'Paciente'
+  const proc    = notif.equipamento_nome ?? 'procedimento solicitado'
   const dataStr = notif.scheduled_at ? formatarDataHora(notif.scheduled_at) : 'data a confirmar'
-  const urgencia = notif.tipo === '2h'
-    ? '\n\n🚨 *ATENÇÃO:* Confirmação necessária em até 2 horas.'
-    : ''
-  return `Assistente Virtual da Saúde de Montes Claros 🏥\n\nOlá, ${nome}! Identifiquei uma pendência para o seu procedimento:\n📋 *${proc}*\n📅 Data agendada: *${dataStr}*${urgencia}\n\nPor favor, confirme sua presença com uma das opções abaixo:\n\n*[1 - SIM, CONFIRMO]* minha presença\n*[2 - NÃO, PRECISO CANCELAR]* este agendamento`
+  const urgencia =
+    notif.tipo === '2h'
+      ? '\n\n🚨 *URGENTE — CONFIRMAÇÃO FINAL:* Esta é a última notificação. A não confirmação em até *2 horas* implicará na liberação automática da sua vaga ao próximo paciente na fila de espera.'
+      : notif.tipo === '24h'
+      ? '\n\n⚡ *ATENÇÃO:* Seu agendamento é amanhã. Confirme sua presença para garantir a vaga.'
+      : ''
+  return `${INST_HEADER}\n\nPrezado(a) *${nome}*,\n\nIdentificamos seu agendamento:\n📋 *Procedimento:* ${proc}\n📅 *Data/Hora:* ${dataStr}\n🏥 *Unidade:* Serviço de Regulação — Montes Claros\n\nPor favor, *confirme sua presença* selecionando uma das opções abaixo:\n\n✅ *[1 - SIM, CONFIRMO]* minha presença\n❌ *[2 - NÃO, PRECISO CANCELAR]* este agendamento${urgencia}\n\n${INST_FOOTER}`
+}
+
+// Template de confirmação de agendamento (disparo manual pelo operador)
+function gerarTemplateConfirmacao(notif) {
+  const nome    = notif?.paciente_nome ?? 'Paciente'
+  const proc    = notif?.equipamento_nome ?? 'procedimento'
+  const dataStr = notif?.scheduled_at ? formatarDataHora(notif.scheduled_at) : 'data a confirmar'
+  return `${INST_HEADER}\n\nPrezado(a) *${nome}*, identificamos seu agendamento de *${proc}* para o dia *${dataStr}* na Unidade de referência Municipal.\n\nPor favor, selecione uma opção:\n✅ *[1 - SIM, CONFIRMO]* minha presença\n❌ *[2 - NÃO, PRECISO CANCELAR]* este agendamento\n\n${INST_FOOTER}`
+}
+
+// Template de reuso / antecipação de vaga (disparo manual pelo operador)
+function gerarTemplateReuso(notif) {
+  const dataStr = notif?.scheduled_at ? formatarDataHora(notif.scheduled_at) : 'horário disponível'
+  return `${INST_HEADER}\n\n⚠️ *AVISO DE VAGA DISPONÍVEL*\n\nIdentificamos que o horário de *${dataStr}* está disponível para o seu procedimento. Esta é uma oportunidade de antecipação do seu exame na fila de espera.\n\nDeseja aceitar esta vaga?\n✅ *[1 - SIM, ACEITO]* a antecipação\n❌ *[2 - NÃO, MANTER]* meu agendamento original\n\n${INST_FOOTER}`
 }
 
 const RESPOSTA_TEXT = {
@@ -73,23 +96,31 @@ function deduplicarPorPaciente(notifs) {
   return [...map.values()]
 }
 
-// ─── Badge de resposta ────────────────────────────────────────────────────────
+// ─── Badge de status (NOC) ───────────────────────────────────────────────────────────────────
 
-function RespostaBadge({ resposta }) {
+function StatusBadge({ resposta, tipo, scheduledAt }) {
   if (resposta === 'confirmou')
-    return <span className="badge bg-green-100 text-green-700 text-[10px]">confirmou</span>
+    return <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-green-100 text-green-700">Confirmado</span>
   if (resposta === 'cancelou')
-    return <span className="badge bg-red-100 text-red-700 text-[10px]">cancelou</span>
-  return <span className="badge bg-yellow-100 text-yellow-700 text-[10px]">pendente</span>
+    return <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-red-100 text-red-700">Cancelado</span>
+  // Em Risco: tipo 2h/24h sem confirmação, ou < 24h para o agendamento
+  const diffMs = scheduledAt ? new Date(scheduledAt) - new Date() : Infinity
+  const isRisk = tipo === '2h' || tipo === '24h' || diffMs < 24 * 60 * 60 * 1000
+  if (isRisk)
+    return <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-orange-100 text-orange-700">Em Risco</span>
+  return <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-yellow-100 text-yellow-700">Pendente</span>
 }
 
 // ─── ContactItem ──────────────────────────────────────────────────────────────
 
 function ContactItem({ notif, active, onClick }) {
   const inicial = (notif.paciente_nome ?? '?')[0].toUpperCase()
+  // Preview: resposta do paciente > label do tipo de notif > nome do procedimento > data agendada
   const preview = notif.resposta_paciente
     ? RESPOSTA_TEXT[notif.resposta_paciente]
-    : TIPO_LABEL[notif.tipo] ?? notif.tipo
+    : TIPO_LABEL[notif.tipo]
+      ?? (notif.equipamento_nome ? `📋 ${notif.equipamento_nome}` : null)
+      ?? (notif.scheduled_at ? `📅 ${formatarDataHora(notif.scheduled_at)}` : 'Aguardando notificação')
 
   return (
     <button
@@ -110,7 +141,7 @@ function ContactItem({ notif, active, onClick }) {
         </div>
         <div className="flex items-center justify-between mt-0.5 gap-1">
           <p className="text-xs text-gray-500 truncate">{preview}</p>
-          <RespostaBadge resposta={notif.resposta_paciente} />
+          <StatusBadge resposta={notif.resposta_paciente} tipo={notif.tipo} scheduledAt={notif.scheduled_at} />
         </div>
       </div>
     </button>
@@ -204,7 +235,13 @@ export default function WhatsappPage() {
   // Mensagens de evento local (orquestração) — não persistidas no banco
   const [eventMsgs, setEventMsgs]     = useState({}) // { [notif.id]: string }
 
+  // Bot de consulta / envio de templates
+  const [inputText, setInputText]     = useState('')
+  const [botMessages, setBotMessages] = useState([]) // mensagens extras do bot local
+  const [botLoading, setBotLoading]   = useState(false)
+
   const chatEndRef = useRef(null)
+  const inputRef   = useRef(null)
 
   // ── Fetch contacts ─────────────────────────────────────────────────────────
   const fetchContacts = useCallback(async () => {
@@ -363,6 +400,8 @@ export default function WhatsappPage() {
     setDoubleCheckId(null)
     setReadOnly(false)
     setReadOnlyProto(null)
+    setBotMessages([])
+    setInputText('')
     fetchChat()
   }, [fetchChat])
 
@@ -382,7 +421,7 @@ export default function WhatsappPage() {
   // Auto-scroll ao final do chat
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [chatNotifs, eventMsgs])
+  }, [chatNotifs, eventMsgs, botMessages])
 
   // ── Selecionar contato ────────────────────────────────────────────────────
   function handleSelectContact(patientId) {
@@ -410,13 +449,13 @@ export default function WhatsappPage() {
     }
   }
 
-  // ── Cancelar: 1ª etapa — solicita double-check ────────────────────────────
+  // ── Cancelar: 1ª etapa — solicita double-check ───────────────────────────────────
   function handleCancelar(notif) {
     setDoubleCheckId(notif.id)
     setEventMsgs(prev => ({
       ...prev,
       [notif.id + '_dc']:
-        '⚠️ ATENÇÃO: O cancelamento liberará sua vaga para outro paciente da fila.\n\nDeseja realmente confirmar a desistência deste agendamento?',
+        '⚠️ ATENÇÃO — OPERAÇÃO SENSÍVEL\n\nVocê selecionou a opção de CANCELAMENTO deste agendamento.\n\nEsta ação é IRREVERSÍVEL: a vaga será imediatamente transferida ao próximo paciente qualificado na fila de espera (critério FIFO clínico).\n\nDeseja prosseguir com a desistência?',
     }))
   }
 
@@ -446,27 +485,123 @@ export default function WhatsappPage() {
           .update({ status: 'cancelado' })
           .eq('id', notif.appointment_id)
 
-        const { nomeConvocado, erro } = await executarReaproveitamento(notif.appointment_id)
+        const { nomeConvocado, erro, nivelFallback } = await executarReaproveitamento(notif.appointment_id)
+
+        const avisoFallback =
+          nivelFallback === 2 ? '\n\n⚠️ *Convocação cross-UBS (fallback)* — critérios de UBS não atendidos. Revisar dados.'
+          : nivelFallback === 1 ? '\n\n⚠️ *Convocação sem filtro de procedimento* — nome_grupo_procedimento ausente nos dados da fila.'
+          : ''
 
         const orchMsg = nomeConvocado
-          ? `✅ Vaga liberada. Motor de orquestração convocou automaticamente *${nomeConvocado}* do topo da fila.`
+          ? `✅ Vaga liberada com sucesso.\n\nMotor de Orquestração (FIFO Clínico) convocou automaticamente *${nomeConvocado}* do topo da fila de espera.${avisoFallback}`
           : erro
-            ? `⚠️ Vaga liberada. Orquestração não pôde convocar próximo: ${erro}`
-            : '⚠️ Vaga liberada. Nenhum paciente aguardando na fila para este procedimento no momento.'
+            ? `⚠️ Vaga liberada. Falha na convocação automática:\n${erro}\n\nO setor de regulação deverá ser notificado manualmente.`
+            : '⚠️ Vaga liberada. Fila vazia para este procedimento/UBS no momento — nenhum paciente elegível aguardando.'
 
-        const proto = `Protocolo de cancelamento nº ${notif.appointment_id.slice(0, 8).toUpperCase()} concluído.\nVaga redirecionada pelo motor de eficiência.`
+        const ts = new Date()
+        const protocolo = `Nº de Protocolo: ${notif.appointment_id.slice(0, 8).toUpperCase()}\nData/Hora: ${new Intl.DateTimeFormat('pt-BR', { dateStyle: 'short', timeStyle: 'medium' }).format(ts)}\nAção: Cancelamento registrado — vaga redirecionada pelo Motor de Eficiência.`
 
         setEventMsgs(prev => {
           const next = { ...prev }
           delete next[notif.id + '_dc']
           return { ...next, [notif.id]: orchMsg }
         })
-        setReadOnlyProto(proto)
+        setReadOnlyProto(protocolo)
         setReadOnly(true)
       }
     } finally {
       await Promise.all([fetchChat(), fetchContacts()])
       setSavingId(null)
+    }
+  }
+
+  // ── Template: Confirmação de agendamento (disparo pelo operador) ───────────
+  function handleTemplateConfirmacao() {
+    if (!pendingNotif && !selectedPatient) return
+    const ref = pendingNotif ?? selectedPatient
+    const hora = formatarHora(new Date().toISOString())
+    setBotMessages(prev => [...prev, {
+      text: gerarTemplateConfirmacao(ref),
+      time: hora,
+      isSys: true,
+    }])
+  }
+
+  // ── Template: Aviso de vaga disponível / reuso (disparo pelo operador) ─────
+  function handleTemplateReuso() {
+    if (!selectedPatient) return
+    const hora = formatarHora(new Date().toISOString())
+    setBotMessages(prev => [...prev, {
+      text: gerarTemplateReuso(selectedPatient),
+      time: hora,
+      isSys: true,
+    }])
+  }
+
+  // ── Bot: consulta por CNS ou mensagem livre ────────────────────────────────
+  async function handleSend() {
+    const text = inputText.trim()
+    if (!text || botLoading) return
+    setInputText('')
+
+    const hora   = formatarHora(new Date().toISOString())
+    const digits = text.replace(/\D/g, '')
+
+    if (digits.length === 15) {
+      // CNS detectado — consulta posição na fila
+      setBotMessages(prev => [...prev, { text, time: hora, isSys: false }])
+      setBotLoading(true)
+      setTimeout(async () => {
+        try {
+          const { data: patient } = await supabase
+            .from('patients').select('id, nome').eq('cns', digits).maybeSingle()
+
+          if (!patient) {
+            setBotMessages(prev => [...prev, {
+              text: `${INST_HEADER}\n\nNenhum paciente encontrado com o CNS ${mascaraCNS(digits)} no sistema. Verifique o número e tente novamente.`,
+              time: formatarHora(new Date().toISOString()), isSys: true,
+            }])
+            return
+          }
+
+          const { data: filaItems } = await supabase
+            .from('v_dashboard_fila')
+            .select('patient_id, nome_grupo_procedimento, prioridade_codigo, data_solicitacao_sisreg, dias_na_fila')
+            .eq('status_local', 'aguardando').eq('patient_id', patient.id)
+            .order('prioridade_codigo', { ascending: true }).limit(1)
+
+          const entrada = filaItems?.[0] ?? null
+          if (!entrada) {
+            setBotMessages(prev => [...prev, {
+              text: `${INST_HEADER}\n\nOlá, *${patient.nome}*!\n\nNão há solicitações ativas na fila de espera para seu cadastro. O pedido pode estar agendado ou já realizado.\n\nConsulte o serviço de regulação para maiores informações.\n\n${INST_FOOTER}`,
+              time: formatarHora(new Date().toISOString()), isSys: true,
+            }])
+            return
+          }
+
+          const { data: todos } = await supabase
+            .from('v_dashboard_fila').select('patient_id')
+            .eq('status_local', 'aguardando').eq('nome_grupo_procedimento', entrada.nome_grupo_procedimento)
+            .order('prioridade_codigo', { ascending: true }).order('data_solicitacao_sisreg', { ascending: true })
+
+          const posicao = ((todos ?? []).findIndex(r => r.patient_id === patient.id) + 1) || '—'
+          setBotMessages(prev => [...prev, {
+            text: `${INST_HEADER}\n\nOlá, *${patient.nome}*!\n\n📋 *Procedimento:* ${entrada.nome_grupo_procedimento ?? '—'}\n🏥 *Posição na fila:* ${posicao}º lugar\n⏳ *Tempo de espera:* ${entrada.dias_na_fila ?? 0} dias\n\nAssim que uma vaga for liberada, você será notificado automaticamente.\n\n${INST_FOOTER}`,
+            time: formatarHora(new Date().toISOString()), isSys: true,
+          }])
+        } catch (err) {
+          console.error('[BotCNS]', err)
+          setBotMessages(prev => [...prev, {
+            text: 'Ocorreu um erro ao consultar o sistema. Tente novamente.',
+            time: formatarHora(new Date().toISOString()), isSys: true,
+          }])
+        } finally {
+          setBotLoading(false)
+        }
+      }, 800)
+    } else {
+      // Mensagem livre — aparece como balão do sistema
+      setBotMessages(prev => [...prev, { text, time: hora, isSys: true }])
     }
   }
 
@@ -648,6 +783,27 @@ export default function WhatsappPage() {
                       .filter(([k]) => !k.endsWith('_dc'))
                       .map(([k, text]) => <EventBubble key={k} text={text} />)
                     }
+
+                    {/* Mensagens do bot / templates disparados pelo operador */}
+                    {botMessages.map((m, i) =>
+                      m.isSys
+                        ? <SysBubble key={`bot-${i}`} text={m.text} time={m.time} delivered />
+                        : <PatientBubble key={`bot-${i}`} text={m.text} time={m.time} />
+                    )}
+
+                    {/* Indicador de digitação do bot */}
+                    {botLoading && (
+                      <div className="flex items-center gap-2 text-xs text-gray-500 pl-1 mb-2">
+                        <div className="w-7 h-7 rounded-full bg-blue-600 flex items-center justify-center flex-shrink-0">
+                          <Bot size={13} className="text-white" />
+                        </div>
+                        <div className="bg-white rounded-lg px-3 py-2 text-sm shadow-sm border border-gray-100 flex items-center gap-1.5">
+                          <span className="w-1.5 h-1.5 rounded-full bg-gray-400 animate-bounce" style={{ animationDelay: '0ms' }} />
+                          <span className="w-1.5 h-1.5 rounded-full bg-gray-400 animate-bounce" style={{ animationDelay: '150ms' }} />
+                          <span className="w-1.5 h-1.5 rounded-full bg-gray-400 animate-bounce" style={{ animationDelay: '300ms' }} />
+                        </div>
+                      </div>
+                    )}
                   </>
                 )}
                 <div ref={chatEndRef} />
@@ -655,46 +811,48 @@ export default function WhatsappPage() {
             )}
           </div>
 
-          {/* Botões de ação para notificação pendente */}
+          {/* Painel de ação: resposta do paciente */}
           {pendingNotif && !readOnly && (
             <div
               className="flex-shrink-0 px-4 py-2.5 flex flex-col gap-2"
               style={{ backgroundColor: '#f0f2f5', borderTop: '1px solid #e9edef' }}
             >
               {doubleCheckId === pendingNotif.id ? (
-                /* ── DOUBLE-CHECK: confirmar desistência ── */
-                <>
-                  <p className="text-[10px] text-red-600 flex items-center gap-1.5 font-medium">
-                    <AlertTriangle size={10} />
-                    Confirme sua desistência — esta ação não pode ser desfeita:
-                  </p>
+                /* ── DOUBLE-CHECK: confirmação jurídica de desistência ── */
+                <div className="flex flex-col gap-2">
+                  <div className="flex items-start gap-2 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+                    <ShieldAlert size={14} className="text-red-600 flex-shrink-0 mt-0.5" />
+                    <p className="text-[11px] text-red-700 leading-snug font-medium">
+                      Confirmação de desistência obrigatória — ação irreversível e juridicamente registrada:
+                    </p>
+                  </div>
                   <div className="flex gap-2">
                     <button
                       onClick={() => handleCancelarConfirmado(pendingNotif)}
                       disabled={!!savingId}
-                      className="flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-semibold bg-red-600 text-white hover:bg-red-700 transition-colors disabled:opacity-50 shadow-sm"
+                      className="flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-bold bg-red-600 text-white hover:bg-red-700 transition-colors disabled:opacity-50 shadow-sm"
                     >
                       {savingId === pendingNotif.id
                         ? <Loader size={12} className="animate-spin" />
                         : <X size={12} />}
-                      SIM, CONFIRMO DESISTÊNCIA
+                      CONFIRMAR DESISTÊNCIA
                     </button>
                     <button
                       onClick={handleVoltarManter}
                       disabled={!!savingId}
-                      className="flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-semibold bg-white text-green-700 border border-green-300 hover:bg-green-50 transition-colors disabled:opacity-50 shadow-sm"
+                      className="flex items-center gap-1.5 px-4 py-2 rounded-full text-xs font-bold bg-green-600 text-white hover:bg-green-700 transition-colors disabled:opacity-50 shadow-sm"
                     >
                       <Check size={12} />
-                      VOLTAR / MANTER VAGA
+                      MANTER AGENDAMENTO
                     </button>
                   </div>
-                </>
+                </div>
               ) : (
-                /* ── NORMAL: confirmar ou iniciar cancelamento ── */
+                /* ── Simular resposta do paciente ── */
                 <>
                   <p className="text-[10px] text-gray-500 flex items-center gap-1.5">
                     <Clock size={10} />
-                    Aguardando resposta do paciente — simule a interação:
+                    Aguardando resposta — simule a interação do paciente:
                   </p>
                   <div className="flex gap-2">
                     <button
@@ -723,32 +881,73 @@ export default function WhatsappPage() {
             </div>
           )}
 
-          {/* Barra de protocolo de cancelamento (modo leitura) */}
+          {/* Protocolo de cancelamento (modo leitura) */}
           {readOnly && readOnlyProto && (
             <div
               className="flex-shrink-0 px-4 py-3"
               style={{ backgroundColor: '#f0f2f5', borderTop: '1px solid #e9edef' }}
             >
               <div className="bg-white border border-gray-200 rounded-xl px-4 py-2.5 text-xs text-gray-600 leading-relaxed shadow-sm">
-                <p className="font-semibold text-gray-700 mb-0.5">🔒 Conversa encerrada</p>
-                <p className="text-gray-500 whitespace-pre-wrap">{readOnlyProto}</p>
+                <p className="font-bold text-gray-800 mb-1 flex items-center gap-1.5">
+                  <Lock size={11} className="text-gray-500" /> Conversa encerrada — Registro de Auditoria
+                </p>
+                <p className="text-gray-500 whitespace-pre-wrap font-mono text-[10px]">{readOnlyProto}</p>
               </div>
             </div>
           )}
 
-          {/* Barra de modo simulação */}
+          {/* Barra de templates institucionais + input de consulta */}
           <div
-            className="flex-shrink-0 px-4 py-2"
-            style={{ backgroundColor: '#f0f2f5', borderTop: '1px solid #e9edef' }}
+            className="flex-shrink-0 border-t"
+            style={{ backgroundColor: '#f0f2f5', borderColor: '#e9edef' }}
           >
-            <div className="flex items-center gap-2">
-              <div className="w-5 h-5 rounded-full bg-gray-300 flex items-center justify-center flex-shrink-0">
-                <Lock size={10} className="text-gray-500" />
+            {/* Templates do operador */}
+            <div className="px-3 pt-2 pb-1 flex items-center gap-2">
+              <span className="text-[10px] text-gray-400 font-semibold uppercase tracking-wide mr-1">Templates:</span>
+              <button
+                onClick={handleTemplateConfirmacao}
+                title="Enviar Template de Confirmação Institucional"
+                className="flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-medium bg-blue-50 text-blue-700 border border-blue-200 hover:bg-blue-100 transition-colors"
+              >
+                <FileText size={10} />
+                Confirmação
+              </button>
+              <button
+                onClick={handleTemplateReuso}
+                title="Enviar Template de Aviso de Vaga Disponível"
+                className="flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-medium bg-amber-50 text-amber-700 border border-amber-200 hover:bg-amber-100 transition-colors"
+              >
+                <RefreshCw size={10} />
+                Vaga Disponível
+              </button>
+            </div>
+
+            {/* Input de consulta por CNS ou mensagem livre */}
+            <div className="px-3 pb-3 flex items-center gap-2">
+              <div className="flex-1 relative">
+                <input
+                  ref={inputRef}
+                  value={inputText}
+                  onChange={e => setInputText(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend() } }}
+                  placeholder={
+                    inputText.replace(/\D/g, '').length === 15
+                      ? '✓ CNS detectado — pressione Enter para consultar a fila'
+                      : 'Digite um CNS (15 dígitos) para consulta ou envie uma mensagem…'
+                  }
+                  className="w-full px-4 py-2.5 text-xs bg-white rounded-full border-0 focus:outline-none focus:ring-1 focus:ring-green-500 pr-10"
+                />
+                {inputText.replace(/\D/g, '').length === 15 && (
+                  <Bot size={14} className="absolute right-4 top-1/2 -translate-y-1/2 text-blue-500" />
+                )}
               </div>
-              <p className="text-[11px] text-gray-500 leading-tight">
-                <span className="font-semibold text-gray-600">Modo Simulação</span>
-                {' '}— interface restrita. Use os botões acima para simular a resposta do paciente.
-              </p>
+              <button
+                onClick={handleSend}
+                disabled={!inputText.trim() || botLoading}
+                className="w-10 h-10 rounded-full bg-green-600 hover:bg-green-700 flex items-center justify-center transition-colors disabled:opacity-40 shadow-sm flex-shrink-0"
+              >
+                <Send size={15} className="text-white" />
+              </button>
             </div>
           </div>
 
