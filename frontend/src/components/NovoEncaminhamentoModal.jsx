@@ -33,7 +33,7 @@ export default function NovoEncaminhamentoModal({ isOpen, onClose, onSuccess }) 
     supabase
       .from('ubs')
       .select('id, nome')
-      .in('tipo', ['S', 'A'])
+      .eq('tipo', 'R')
       .order('nome')
       .then(({ data }) => setUbsList(data || []))
   }, [isOpen])

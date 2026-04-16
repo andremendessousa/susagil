@@ -40,7 +40,7 @@ export function useNotifications() {
     const { data, error: err } = await supabase
       .from('notification_log')
       .select(`
-        id, tipo, canal, enviado_at, respondido_at,
+        id, patient_id, tipo, canal, enviado_at, respondido_at,
         resposta_paciente, entregue, erro, appointment_id,
         patients ( nome, telefone ),
         appointments (
@@ -49,7 +49,7 @@ export function useNotifications() {
         )
       `)
       .order('enviado_at', { ascending: false })
-      .limit(50)
+      .limit(100)
 
     if (err) {
       setError(err.message)

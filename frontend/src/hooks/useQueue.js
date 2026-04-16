@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { supabase } from '../lib/supabase'
 
 export function useQueue({ horizonte = 30, filtroStatus = null, filtroTipo = null } = {}) {
@@ -35,23 +35,27 @@ export function useQueue({ horizonte = 30, filtroStatus = null, filtroTipo = nul
     setLoading(false)
   }, [horizonte, filtroStatus, filtroTipo])
 
+  useEffect(() => { fetch() }, [fetch])
+
+  // Ref estável para o canal Realtime não ser recriado a cada mudança de filtro.
+  const fetchRef = useRef(null)
+  useEffect(() => { fetchRef.current = fetch }, [fetch])
+
+  // Nome único por instância evita conflito quando FilaPage e outras páginas
+  // usam useQueue simultaneamente.
+  const channelName = useRef(`queue-rt-${Math.random().toString(36).slice(2, 8)}`).current
+
+  // Realtime: qualquer mudança em queue_entries ou appointments refaz a query.
+  // Deps vazios: canal criado uma vez, nunca re-subscrito.
   useEffect(() => {
-    let mounted = true
-
-    fetch()
-
-    // Realtime: qualquer mudança em queue_entries ou appointments refaz a query
     const channel = supabase
-      .channel('queue-changes')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'queue_entries' },  () => { if (mounted) fetch() })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'appointments' },   () => { if (mounted) fetch() })
+      .channel(channelName)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'queue_entries' },  () => fetchRef.current?.())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'appointments' },   () => fetchRef.current?.())
       .subscribe()
 
-    return () => {
-      mounted = false
-      supabase.removeChannel(channel)
-    }
-  }, [fetch])
+    return () => { supabase.removeChannel(channel) }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   return { entries, loading, error, refresh: fetch }
 }

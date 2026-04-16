@@ -75,20 +75,6 @@ export function useDashboardMetrics({ horizonte = 30, tipoAtendimento = null } =
       // Vagas em risco: agendamentos 'agendado' dentro da janela configurável
       const riscoCount = vagasRisco.error ? 0 : (vagasRisco.count ?? 0)
 
-      // Debug: valida consistência dos KPIs após importação de CSV
-      console.table({
-        absenteismo_pct:   absValue,
-        espera_dias:       esperaValue,
-        confirmacao_pct:   confValue,
-        reaprov_pct:       reapValue,
-        satisfacao_nota:   satValue,
-        demanda_rep:       demandaValue,
-        cap_historica_pct: capValue,
-        cap_futura_pct:    futValue,
-        vagas_em_risco:    riscoCount,
-        janela_risco_h:    vagasRiscoHoras,
-      })
-
       setMetrics({
         absenteismo:          { valor: absValue,     status: calcularStatus(absValue,     configs.absenteismo_taxa)          },
         espera:               { valor: esperaValue,  status: calcularStatus(esperaValue,  configs.espera_media_dias)         },
@@ -116,11 +102,14 @@ export function useDashboardMetrics({ horizonte = 30, tipoAtendimento = null } =
   const fetchRef = useRef(null)
   useEffect(() => { fetchRef.current = fetch }, [fetch])
 
+  // Nome único por instância evita conflito se o hook for usado em múltiplas páginas.
+  const channelName = useRef(`dashboard-metrics-rt-${Math.random().toString(36).slice(2, 8)}`).current
+
   // Realtime: qualquer alteração em appointments ou queue_entries recarrega as métricas.
   // Deps vazios: canal criado uma vez, nunca re-subscrito desnecessariamente.
   useEffect(() => {
     const channel = supabase
-      .channel('dashboard-metrics-realtime')
+      .channel(channelName)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'appointments' },  () => fetchRef.current?.())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'queue_entries' }, () => fetchRef.current?.())
       .subscribe()
