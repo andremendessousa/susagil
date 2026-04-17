@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Outlet, NavLink, useNavigate } from 'react-router-dom'
-import { LayoutDashboard, ListOrdered, Monitor, Bell, Settings, BarChart2, Globe, MessageSquare } from 'lucide-react'
+import { LayoutDashboard, ListOrdered, Monitor, Bell, Settings, BarChart2, Globe, MessageSquare, Bot } from 'lucide-react'
 import { useAuth } from '../hooks/useAuth'
 import { supabase } from '../lib/supabase'
 import { SeletorEscopo } from './SeletorEscopo'
@@ -13,6 +13,7 @@ const baseNav = [
   { to: '/analise',       icon: BarChart2,       label: 'Análise Gerencial' },
   { to: '/notificacoes',  icon: Bell,            label: 'Notificações'    },
   { to: '/whatsapp',      icon: MessageSquare,   label: 'Comunicação WhatsApp' },
+  { to: '/assistente',    icon: Bot,             label: 'Assistente IA',  badge: 'Novo' },
   { to: '/configuracoes', icon: Settings,        label: 'Configurações'   },
 ]
 
@@ -101,6 +102,9 @@ export default function Layout() {
             >
               <span className="relative">
                 <Icon size={18} />
+                {to === '/assistente' && (
+                  <span className="absolute -top-1 -right-1 h-2 w-2 rounded-full bg-emerald-400" />
+                )}
                 {to === '/notificacoes' && vagasEmRisco > 0 && (
                   <span className="absolute -top-1 -right-1 h-2 w-2 rounded-full bg-red-500" />
                 )}
@@ -109,6 +113,11 @@ export default function Layout() {
                 )}
               </span>
               {label}
+              {to === '/assistente' && (
+                <span className="ml-auto text-[10px] font-bold bg-emerald-500 text-white rounded-full px-1.5 py-0.5 leading-none">
+                  Novo
+                </span>
+              )}
               {to === '/notificacoes' && vagasEmRisco > 0 && (
                 <span className="ml-auto text-xs bg-red-500 text-white rounded-full px-1.5 py-0.5 leading-none">
                   {vagasEmRisco}

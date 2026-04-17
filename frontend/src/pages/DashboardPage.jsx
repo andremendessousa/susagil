@@ -7,11 +7,12 @@ import {
 } from 'recharts'
 import {
   AlertTriangle, Clock, Activity, Users, Zap, Loader, MapPin,
-  BarChart2, TrendingDown, Bell, Calendar,
+  BarChart2, TrendingDown, Bell, Calendar, Award,
 } from 'lucide-react'
 import { useKpiConfigs } from '../hooks/useKpiConfigs'
 import { useDashboardMetrics } from '../hooks/useDashboardMetrics'
 import { useDashboardCharts } from '../hooks/useDashboardCharts'
+import { useDashboardChartsV2 } from '../hooks/useDashboardChartsV2'
 import { useEscopo } from '../contexts/EscopoContext'
 import { MUNICIPIOS_MACRORREGIAO, MUNICIPIO_SEDE } from '../constants/macrorregiao'
 
@@ -136,6 +137,7 @@ export default function DashboardPage() {
     horizonte,
     tipoAtendimento: tipoTendencia,
   })
+  const { charts2, loading2: loadingCharts2 } = useDashboardChartsV2({ horizonte })
 
   const [agora, setAgora] = useState(new Date())
   useEffect(() => {
@@ -584,6 +586,259 @@ export default function DashboardPage() {
         </div>
       )}
 
+      {/* ── ZONA 6: Análise de Fila e Desempenho (AssistenteIA Fase 2) ──────── */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+
+        {/* Card E — Fila ativa por UBS encaminhadora */}
+        <ChartCard
+          icon={Users}
+          titulo="Volume de fila por UBS"
+          pergunta="Quais UBSs têm mais pacientes aguardando?"
+          loading={loadingCharts2}
+          vazio={charts2.fila_por_ubs.length === 0}
+        >
+          <ResponsiveContainer width="100%" height={300}>
+            <BarChart
+              layout="vertical"
+              data={charts2.fila_por_ubs.slice(0, 10)}
+              margin={{ left: 0, right: 50, top: 4, bottom: 4 }}
+            >
+              <XAxis
+                type="number"
+                tick={{ fontSize: 11 }}
+                tickLine={false}
+                axisLine={false}
+              />
+              <YAxis
+                type="category"
+                dataKey="ubs_nome"
+                width={150}
+                tick={{ fontSize: 11 }}
+                tickLine={false}
+                tickFormatter={v => String(v ?? '').slice(0, 22)}
+              />
+              <Tooltip
+                content={({ active, payload, label }) => {
+                  if (!active || !payload?.length) return null
+                  const d = payload[0]?.payload ?? {}
+                  return (
+                    <div className="bg-white border border-gray-200 rounded-lg shadow-md px-3 py-2 text-xs">
+                      <p className="font-semibold text-gray-700 mb-1">{label}</p>
+                      <p className="text-blue-700">Aguardando: <strong>{Number(d.total_aguardando ?? 0).toLocaleString('pt-BR')}</strong></p>
+                      <p className="text-gray-500">{d.pct_do_total ?? 0}% do total · Espera média: {d.espera_media_dias ?? 0}d</p>
+                    </div>
+                  )
+                }}
+              />
+              <Bar dataKey="total_aguardando" name="Pacientes" fill="#1d4ed8" radius={[0, 3, 3, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </ChartCard>
+
+        {/* Card F — Agenda comprometida por clínica/equipamento */}
+        <ChartCard
+          icon={Activity}
+          titulo="Carga de agenda por equipamento"
+          pergunta="Qual clínica está mais sobrecarregada?"
+          loading={loadingCharts2}
+          vazio={charts2.fila_por_clinica.length === 0}
+        >
+          <ResponsiveContainer width="100%" height={300}>
+            <BarChart
+              layout="vertical"
+              data={charts2.fila_por_clinica.slice(0, 10)}
+              margin={{ left: 0, right: 50, top: 4, bottom: 4 }}
+            >
+              <XAxis
+                type="number"
+                unit="%"
+                domain={[0, 100]}
+                tick={{ fontSize: 11 }}
+                tickLine={false}
+                axisLine={false}
+              />
+              <YAxis
+                type="category"
+                dataKey="equipamento_nome"
+                width={150}
+                tick={{ fontSize: 11 }}
+                tickLine={false}
+                tickFormatter={v => String(v ?? '').slice(0, 22)}
+              />
+              <Tooltip
+                content={({ active, payload, label }) => {
+                  if (!active || !payload?.length) return null
+                  const d = payload[0]?.payload ?? {}
+                  return (
+                    <div className="bg-white border border-gray-200 rounded-lg shadow-md px-3 py-2 text-xs">
+                      <p className="font-semibold text-gray-700 mb-1">{label}</p>
+                      <p className="text-gray-500 mb-1">{d.unidade_nome} · {d.municipio}</p>
+                      <p className="text-blue-700">
+                        <strong>{Number(d.vagas_comprometidas ?? 0).toLocaleString('pt-BR')}</strong> vagas/{Number(d.capacidade_periodo ?? 0).toLocaleString('pt-BR')} cap.
+                      </p>
+                      <p className="text-gray-600">Carga: <strong>{d.pct_carga_fila ?? 0}%</strong></p>
+                    </div>
+                  )
+                }}
+              />
+              <ReferenceLine
+                x={85}
+                stroke="#16a34a"
+                strokeDasharray="4 3"
+                label={{ value: 'Meta 85%', position: 'top', fontSize: 10, fill: '#16a34a' }}
+              />
+              <Bar dataKey="pct_carga_fila" name="Carga (%)" radius={[0, 3, 3, 0]}>
+                {charts2.fila_por_clinica.slice(0, 10).map((entry, i) => {
+                  const p = Number(entry.pct_carga_fila)
+                  return <Cell key={i} fill={p >= 85 ? '#16a34a' : p >= 50 ? '#d97706' : '#dc2626'} />
+                })}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        </ChartCard>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+
+        {/* Card G — Score de desempenho por UBS */}
+        <ChartCard
+          icon={Award}
+          titulo="Ranking de desempenho por UBS"
+          pergunta="Qual UBS combina menos faltas e menor espera?"
+          loading={loadingCharts2}
+          vazio={charts2.desempenho_ubs.length === 0}
+        >
+          <ResponsiveContainer width="100%" height={300}>
+            <BarChart
+              layout="vertical"
+              data={charts2.desempenho_ubs.slice(0, 10)}
+              margin={{ left: 0, right: 50, top: 4, bottom: 4 }}
+            >
+              <XAxis
+                type="number"
+                domain={[0, 100]}
+                tick={{ fontSize: 11 }}
+                tickLine={false}
+                axisLine={false}
+              />
+              <YAxis
+                type="category"
+                dataKey="ubs_nome"
+                width={150}
+                tick={{ fontSize: 11 }}
+                tickLine={false}
+                tickFormatter={v => String(v ?? '').slice(0, 22)}
+              />
+              <Tooltip
+                content={({ active, payload, label }) => {
+                  if (!active || !payload?.length) return null
+                  const d = payload[0]?.payload ?? {}
+                  return (
+                    <div className="bg-white border border-gray-200 rounded-lg shadow-md px-3 py-2 text-xs">
+                      <p className="font-semibold text-gray-700 mb-1">{label}</p>
+                      <p className="text-blue-700">Score: <strong>{d.score_composto ?? 0}</strong>/100</p>
+                      <p className="text-gray-500">Absenteísmo: {d.absenteismo_pct ?? 0}% · Espera: {d.espera_media_dias ?? 0}d</p>
+                      <p className="text-gray-500">{Number(d.total_atendidos ?? 0).toLocaleString('pt-BR')} atendidos</p>
+                    </div>
+                  )
+                }}
+              />
+              <Bar dataKey="score_composto" name="Score" radius={[0, 3, 3, 0]}>
+                {charts2.desempenho_ubs.slice(0, 10).map((entry, i) => {
+                  const s = Number(entry.score_composto)
+                  return <Cell key={i} fill={s >= 80 ? '#16a34a' : s >= 60 ? '#d97706' : '#dc2626'} />
+                })}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        </ChartCard>
+
+        {/* Card H — Tipos de exame mais solicitados */}
+        <ChartCard
+          icon={BarChart2}
+          titulo="Procedimentos mais solicitados"
+          pergunta="Quais exames têm maior demanda na fila?"
+          loading={loadingCharts2}
+          vazio={charts2.tipos_exame.length === 0}
+        >
+          <ResponsiveContainer width="100%" height={300}>
+            <BarChart
+              data={charts2.tipos_exame.slice(0, 10)}
+              margin={{ top: 4, right: 12, bottom: 60, left: 0 }}
+            >
+              <XAxis
+                dataKey="tipo_exame"
+                tick={{ fontSize: 10 }}
+                tickLine={false}
+                angle={-35}
+                textAnchor="end"
+                interval={0}
+                tickFormatter={v => String(v ?? '').slice(0, 18)}
+              />
+              <YAxis tick={{ fontSize: 11 }} tickLine={false} axisLine={false} />
+              <Tooltip
+                content={({ active, payload, label }) => {
+                  if (!active || !payload?.length) return null
+                  const d = payload[0]?.payload ?? {}
+                  return (
+                    <div className="bg-white border border-gray-200 rounded-lg shadow-md px-3 py-2 text-xs">
+                      <p className="font-semibold text-gray-700 mb-1">{label}</p>
+                      <p className="text-blue-700">
+                        <strong>{Number(d.total_solicitacoes ?? 0).toLocaleString('pt-BR')}</strong> solicitações ({d.pct_do_total ?? 0}%)
+                      </p>
+                      <p className="text-gray-500">Espera média: {d.espera_media_dias ?? 0} dias</p>
+                    </div>
+                  )
+                }}
+              />
+              <Bar dataKey="total_solicitacoes" fill="#1d4ed8" name="Solicitações" radius={[3, 3, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </ChartCard>
+      </div>
+
+      {/* Card I — Espera média e absenteísmo por município */}
+      <ChartCard
+        icon={Clock}
+        titulo="Espera e absenteísmo por município"
+        pergunta="Qual município tem maior tempo de espera?"
+        loading={loadingCharts2}
+        vazio={charts2.espera_municipio.length === 0}
+      >
+        <ResponsiveContainer width="100%" height={320}>
+          <BarChart
+            data={charts2.espera_municipio.slice(0, 15)}
+            margin={{ top: 4, right: 12, bottom: 60, left: 0 }}
+          >
+            <XAxis
+              dataKey="municipio"
+              tick={{ fontSize: 11 }}
+              tickLine={false}
+              angle={-35}
+              textAnchor="end"
+              interval={0}
+            />
+            <YAxis tick={{ fontSize: 11 }} tickLine={false} axisLine={false} />
+            <Tooltip
+              content={({ active, payload, label }) => {
+                if (!active || !payload?.length) return null
+                const d = payload[0]?.payload ?? {}
+                return (
+                  <div className="bg-white border border-gray-200 rounded-lg shadow-md px-3 py-2 text-xs">
+                    <p className="font-semibold text-gray-700 mb-1">{label}</p>
+                    <p className="text-blue-700">Espera média: <strong>{d.espera_media_dias ?? 0} dias</strong></p>
+                    <p className="text-gray-500">Absenteísmo: {d.pct_absenteismo ?? 0}%</p>
+                    <p className="text-gray-500">{Number(d.total_pacientes ?? 0).toLocaleString('pt-BR')} pacientes</p>
+                  </div>
+                )
+              }}
+            />
+            <Legend wrapperStyle={{ fontSize: 11, paddingTop: 8 }} />
+            <Bar dataKey="espera_media_dias" fill="#1d4ed8" name="Espera média (dias)" radius={[3, 3, 0, 0]} />
+            <Bar dataKey="pct_absenteismo" fill="#dc2626" name="Absenteísmo (%)" radius={[3, 3, 0, 0]} />
+          </BarChart>
+        </ResponsiveContainer>
+      </ChartCard>
       {/* ── ZONA 5: Polo macrorregional (apenas modo macrorregião) ─────────── */}
       {isMacrorregiao && (
       <div className="card">
