@@ -82,6 +82,7 @@ export default function AnaliseGerencialPage() {
   // ─── Painel 3: Distribuição de prioridade na fila ─────────────────────────
   const [filaDist, setFilaDist] = useState([])
   const [loadingFila, setLoadingFila] = useState(true)
+  const [filaRt, setFilaRt] = useState(0)   // tick: incrementado pelo Realtime de queue_entries
 
   useEffect(() => {
     let mounted = true
@@ -116,7 +117,7 @@ export default function AnaliseGerencialPage() {
     }
     fetchFila()
     return () => { mounted = false }
-  }, [])
+  }, [filaRt])
 
   // ─── Painel 4: Reaproveitamento de vagas ─────────────────────────────────
   // cancelados: denominador correto — cancelamento antecipado é oportunidade de gestão, não falta
@@ -189,6 +190,14 @@ export default function AnaliseGerencialPage() {
           setVagasRecuperadas(prev => prev + 1)
           setReaprovTick(t => t + 1)
         }
+      })
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'queue_entries',
+      }, () => {
+        // Fila mudou (novo encaminhamento ou mudança de status) — atualiza donut de prioridade
+        setFilaRt(t => t + 1)
       })
       .subscribe()
     return () => supabase.removeChannel(channel)
@@ -286,7 +295,7 @@ export default function AnaliseGerencialPage() {
                         <strong>{Number(d?.taxa_absenteismo).toLocaleString('pt-BR')}%</strong> de absenteísmo
                       </p>
                       <p className="text-gray-500 mt-0.5">
-                        {Number(d?.total_finalizados).toLocaleString('pt-BR')} finalizados
+                        {Number(d?.total_agendado).toLocaleString('pt-BR')} agendados
                       </p>
                     </div>
                   )

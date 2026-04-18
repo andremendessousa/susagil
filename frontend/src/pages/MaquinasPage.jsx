@@ -20,9 +20,9 @@ function barColor(pct) {
 }
 
 function badgeInfo(pct) {
-  if (pct >= 85) return { label: 'Sobrecarregado', className: 'bg-green-100 text-green-700' }
-  if (pct >= 50) return { label: 'Normal',         className: 'bg-amber-100 text-amber-700' }
-  return           { label: 'Ocioso',              className: 'bg-red-100 text-red-700'    }
+  if (pct >= 85) return { label: 'Alta utilização', className: 'bg-green-100 text-green-700' }
+  if (pct >= 50) return { label: 'Normal',          className: 'bg-amber-100 text-amber-700' }
+  return           { label: 'Ocioso',               className: 'bg-red-100 text-red-700'    }
 }
 
 function ChartSkeleton() {

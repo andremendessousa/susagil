@@ -48,16 +48,18 @@ export function useDashboardMetrics({ horizonte = 30, tipoAtendimento = null } =
           .lte('scheduled_at', new Date(Date.now() + vagasRiscoHoras * 3_600_000).toISOString()),
       ])
 
-      // Erros fatais: apenas nas 8 RPCs de negócio — vagasRisco é não-fatal
-      const anyError = [absenteismo, espera, confirmacao, reaproveitamento, satisfacao, demandaReprimida, ocupacaoPassada, ocupacaoFutura].find(r => r.error)
+      // Erros fatais: apenas nas 5 RPCs de negócio principal.
+      // satisfacao, demandaReprimida, ocupacaoFutura → degradação graceful (card mostra '—' ou some)
+      const anyError = [absenteismo, espera, confirmacao, reaproveitamento, ocupacaoPassada].find(r => r.error)
       if (anyError?.error) throw anyError.error
 
       const absValue    = absenteismo.data?.taxa_absenteismo     ?? 0
       const esperaValue = espera.data?.espera_atual_dias         ?? 0
       const confValue   = confirmacao.data?.taxa_confirmacao     ?? 0
       const reapValue   = reaproveitamento.data?.taxa_reaproveitamento ?? 0
-      const satValue    = satisfacao.data?.nota_media            ?? 0
-      const demandaValue= demandaReprimida.data?.total_reprimida ?? 0
+      // Valores não-críticos: null quando RPC falha → calcularStatus retorna 'sem_dados' → card mostra '—'
+      const satValue     = satisfacao.error      ? null : (satisfacao.data?.nota_media             ?? null)
+      const demandaValue = demandaReprimida.error ? null : (demandaReprimida.data?.total_reprimida  ?? null)
 
       // Capacidade: aproveitamento histórico via fn_ocupacao_passada
       const ocupRowsPassados = ocupacaoPassada.data || []
@@ -79,7 +81,8 @@ export function useDashboardMetrics({ horizonte = 30, tipoAtendimento = null } =
         absenteismo:          { valor: absValue,     status: calcularStatus(absValue,     configs.absenteismo_taxa)          },
         espera:               { valor: esperaValue,  status: calcularStatus(esperaValue,  configs.espera_media_dias)         },
         capacidade:           { valor: capValue,     status: calcularStatus(capValue,     configs.capacidade_aproveitamento) },
-        ocupacao_futura:      { valor: futValue,     status: calcularStatus(futValue,     configs.capacidade_aproveitamento) },
+        // Se fn_ocupacao_futura falhar, null suprime o widget (DashboardPage tem guard '!= null')
+        ocupacao_futura:      ocupacaoFutura.error ? null : { valor: futValue, status: calcularStatus(futValue, configs.capacidade_aproveitamento) },
         demanda_reprimida:    { valor: demandaValue, status: calcularStatus(demandaValue, configs.demanda_reprimida_dias)    },
         confirmacao_ativa:    { valor: confValue,    status: calcularStatus(confValue,    configs.confirmacao_ativa_taxa)    },
         reaproveitamento:     { valor: reapValue,    status: calcularStatus(reapValue,    configs.reaproveitamento_taxa)     },

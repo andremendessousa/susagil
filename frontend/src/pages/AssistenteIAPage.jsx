@@ -29,21 +29,25 @@ const MENSAGEM_BOAS_VINDAS = `Olá! Sou o assistente de regulação do SUS Raio-
 Você pode me perguntar sobre:
 • Situação geral da fila e indicadores
 • Equipamentos ociosos ou sobrecarregados
-• Absenteísmo por clínica executante
-• Tempo de espera por UBS de origem
-• Demanda de pacientes de outros municípios
-• Recomendações de ação para melhorar os indicadores
+• Absenteísmo e desempenho por clínica executante ou UBS
+• Fila ativa e tempo de espera por UBS de origem
+• Tipos de exame mais solicitados
+• Espera e absenteísmo por município de origem
+• Tendência temporal das faltas ao longo dos dias
+• Recomendações de ação prioritárias
 
 Pergunte com suas próprias palavras — por exemplo:
-"Como está a fila hoje?", "Qual equipamento está mais parado?" ou "O que está mais urgente?"`
+"Como está a fila hoje?", "Qual UBS tem maior represamento?" ou "Quais exames têm mais demanda?"`
 
 const RESPOSTA_FORA_ESCOPO = `Entendo sua pergunta, mas ela está fora do que consigo analisar com os dados disponíveis no momento. Posso ajudar com:
 
 • Situação geral da fila e indicadores
 • Equipamentos ociosos ou sobrecarregados
-• Absenteísmo por clínica executante
-• Tempo de espera por UBS de origem
-• Distribuição de pacientes por município
+• Absenteísmo e desempenho por clínica executante ou UBS
+• Fila ativa e represamento por UBS ou equipamento
+• Tipos de exame mais solicitados
+• Espera e absenteísmo por município de origem
+• Tendência temporal das faltas
 • Recomendações de ação baseadas nos dados
 
 Tente reformular sua pergunta focando em um desses temas.`
@@ -86,6 +90,28 @@ Categorias válidas:
 - recomendacoes: o que fazer, sugestões prioritárias, ações imediatas, como melhorar os indicadores
   Ex: "o que eu faço?", "por onde começo?", "o que está mais urgente?", "quais as prioridades?", "como melhorar?", "ações recomendadas"
 
+- fila_por_ubs: volume de fila ativa (backlog) por UBS de origem, represamento de demanda por unidade de saúde
+  Ex: "qual UBS tem maior fila?", "onde tem mais gente esperando?", "demanda represada por unidade", "qual posto tá mais cheio na fila?", "represamento por UBS", "mostre a fila por posto de saúde"
+
+- fila_por_clinica: agenda comprometida ou fila nos equipamentos e clínicas executantes
+  Ex: "qual clínica tá mais cheia?", "qual hospital tem mais gente na espera?", "agenda dos equipamentos", "qual executante tem mais compromisso?", "capacidade comprometida por clínica"
+
+- desempenho_ubs: ranking ou score de desempenho das UBSs encaminhadoras, comparativo entre postos
+  Ex: "qual UBS tá melhor?", "ranking das UBSs", "desempenho por unidade de saúde", "qual posto tá indo bem?", "quem se sai melhor?", "pontuação das UBSs", "compare as UBSs"
+
+- tipos_exame: quais tipos de exame ou procedimentos são mais solicitados, distribuição por procedimento
+  Ex: "quais exames são mais pedidos?", "procedimento mais solicitado", "quais exames têm mais demanda?", "o que é mais requisitado?", "distribuição por tipo de exame", "quais procedimentos lideram?"
+
+- espera_por_municipio: tempo de espera real ou absenteísmo por município de origem do paciente
+  Ex: "espera por município?", "quem vem de fora espera quanto?", "como está cada cidade?", "tempo de espera por cidade", "qual município tem mais espera?", "como estão os municípios da região?"
+  ATENÇÃO: diferente de demanda_municipal (que conta encaminhamentos) — este calcula espera real por município.
+
+- tendencia_absenteismo: evolução temporal das faltas, gráfico de tendência ao longo dos dias
+  Ex: "como a falta evoluiu?", "tendência dos últimos dias", "gráfico de faltas", "absenteísmo tá subindo ou caindo?", "histórico de faltas por dia", "como foi nos últimos 30 dias?"
+
+- exames_por_local: volume de exames efetivamente realizados por local ou equipamento executante
+  Ex: "quais locais fizeram mais exames?", "volume por local", "onde realizaram mais?", "produção por equipamento", "qual local produziu mais?", "ranking de produção"
+
 - fora_de_escopo: qualquer coisa que não se encaixe nas categorias acima
 
 Responda APENAS com JSON válido, sem markdown, sem explicação:
@@ -123,13 +149,15 @@ Dado "espera por UBS" = tempo médio de espera dos pacientes encaminhados por ca
 Em respostas de acompanhamento SEM JSON de dados frescos (ex: pedidos de detalhamento, planos de ação):
 - Cite números SOMENTE se eles já foram explicitamente mencionados nas mensagens anteriores desta conversa
 - Se precisar de dados que não constam no histórico visível, diga: "Para detalhar isso com precisão precisaria consultar os dados novamente — quer que eu faça isso agora?"
-- NUNCA invente percentuais, contagens ou nomes de equipamentos não mencionados`
+- NUNCA invente percentuais, contagens ou nomes de equipamentos não mencionados
+- NUNCA invente nomes de pessoas (médicos, gestores, pacientes) — o JSON nunca contém esse dado; qualquer nome inventado é alucinação
+- A primeira frase da resposta deve mencionar o período analisado (ex: "Nos últimos 30 dias..." ou "No período de DD/MM a DD/MM...")`
 
 // ── Mapa de intenções → execução de RPC ────────────────────────────────────────
 // Nomes exatos das RPCs conforme existem no Supabase (verificado em useDashboardCharts.js e useDashboardMetrics.js)
 
-async function executarQuery(intencao, parametros) {
-  const dias = parametros?.dias || 30
+async function executarQuery(intencao, parametros, diasPadrao = 30) {
+  const dias = parametros?.dias || diasPadrao
 
   switch (intencao) {
     case 'situacao_geral': {
@@ -306,6 +334,153 @@ async function executarQuery(intencao, parametros) {
       }
     }
 
+    case 'fila_por_ubs': {
+      const { data } = await supabase.rpc('get_fila_por_ubs', {
+        p_horizonte_dias:   dias,
+        p_tipo_atendimento: null,
+      })
+      const rows = data || []
+      if (rows.length === 0) return { aviso: 'Sem dados de fila por UBS para este período. Tente ampliar o período.', periodo_dias: dias }
+      return {
+        periodo_dias: dias,
+        total_ubs: rows.length,
+        ubs: rows.map(e => ({
+          ubs_nome:          e.ubs_nome,
+          municipio:         e.municipio,
+          total_aguardando:  Number(e.total_aguardando),
+          pct_do_total:      Number(e.pct_do_total),
+          espera_media_dias: Number(e.espera_media_dias),
+        })),
+      }
+    }
+
+    case 'fila_por_clinica': {
+      const { data } = await supabase.rpc('get_fila_por_clinica', {
+        p_horizonte_dias:   dias,
+        p_tipo_atendimento: null,
+      })
+      const rows = data || []
+      if (rows.length === 0) return { aviso: 'Sem dados de agenda por clínica para este período.', periodo_dias: dias }
+      return {
+        periodo_dias: dias,
+        clinicas: rows.map(e => ({
+          equipamento:         e.equipamento_nome,
+          unidade:             e.unidade_nome,
+          municipio:           e.municipio,
+          vagas_comprometidas: Number(e.vagas_comprometidas),
+          capacidade_periodo:  Number(e.capacidade_periodo),
+          pct_carga_fila:      Number(e.pct_carga_fila),
+        })),
+      }
+    }
+
+    case 'desempenho_ubs': {
+      const { data } = await supabase.rpc('get_desempenho_por_ubs', {
+        p_horizonte_dias: dias,
+      })
+      const rows = data || []
+      if (rows.length === 0) return { aviso: 'Sem dados de desempenho por UBS para este período.', periodo_dias: dias }
+      return {
+        periodo_dias: dias,
+        ubs: rows.map(e => ({
+          ubs_nome:          e.ubs_nome,
+          municipio:         e.municipio,
+          absenteismo_pct:   Number(e.absenteismo_pct),
+          espera_media_dias: Number(e.espera_media_dias),
+          total_atendidos:   Number(e.total_atendidos),
+          score_composto:    Number(e.score_composto),
+        })),
+      }
+    }
+
+    case 'tipos_exame': {
+      const { data } = await supabase.rpc('get_tipos_exame_solicitados', {
+        p_horizonte_dias:   dias,
+        p_tipo_atendimento: null,
+      })
+      const rows = data || []
+      if (rows.length === 0) return { aviso: 'Sem dados de tipos de exame para este período.', periodo_dias: dias }
+      return {
+        periodo_dias: dias,
+        exames: rows.map(e => ({
+          tipo_exame:         e.tipo_exame,
+          total_solicitacoes: Number(e.total_solicitacoes),
+          pct_do_total:       Number(e.pct_do_total),
+          espera_media_dias:  Number(e.espera_media_dias),
+        })),
+      }
+    }
+
+    case 'espera_por_municipio': {
+      const { data } = await supabase.rpc('get_espera_por_municipio', {
+        p_horizonte_dias: dias,
+      })
+      const rows = data || []
+      if (rows.length === 0) return { aviso: 'Sem dados de espera por município para este período.', periodo_dias: dias }
+      return {
+        periodo_dias: dias,
+        tipo_dado:    'espera_e_absenteismo_por_municipio_de_origem',
+        municipios: rows.map(e => ({
+          municipio:         e.municipio,
+          total_pacientes:   Number(e.total_pacientes),
+          espera_media_dias: Number(e.espera_media_dias),
+          pct_absenteismo:   Number(e.pct_absenteismo),
+        })),
+      }
+    }
+
+    case 'tendencia_absenteismo': {
+      const { data } = await supabase.rpc('get_tendencia_absenteismo', {
+        p_horizonte_dias:   dias,
+        p_tipo_atendimento: null,
+        p_media_movel_dias: 7,
+      })
+      const rows = data || []
+      if (rows.length === 0) return { aviso: 'Sem dados de tendência para este período. Tente ampliar o período.', periodo_dias: dias }
+      const primeiro = rows[0]
+      const ultimo   = rows[rows.length - 1]
+      const variacao = (ultimo && primeiro)
+        ? (Number(ultimo.taxa ?? 0) - Number(primeiro.taxa ?? 0)).toFixed(1)
+        : null
+      return {
+        periodo_dias:      dias,
+        total_pontos:      rows.length,
+        taxa_inicial:      Number(primeiro?.taxa ?? 0),
+        taxa_final:        Number(ultimo?.taxa   ?? 0),
+        variacao_pct:      variacao ? Number(variacao) : null,
+        media_movel_final: Number(ultimo?.taxa_media_movel ?? 0),
+        serie: rows.map(e => ({
+          dia:              e.dia,
+          total:            Number(e.total),
+          faltas:           Number(e.faltas),
+          taxa:             Number(e.taxa),
+          taxa_media_movel: Number(e.taxa_media_movel),
+        })),
+      }
+    }
+
+    case 'exames_por_local': {
+      const { data } = await supabase.rpc('get_exames_por_local', {
+        p_horizonte_dias:   dias,
+        p_tipo_atendimento: null,
+      })
+      const rows = data || []
+      if (rows.length === 0) return { aviso: 'Sem dados de exames por local para este período. Tente ampliar o período.', periodo_dias: dias }
+      return {
+        periodo_dias: dias,
+        locais: rows
+          .map(e => ({
+            equipamento:      e.equipamento_nome,
+            unidade:          e.unidade_nome,
+            realizados:       Number(e.realizados),
+            total_agendado:   Number(e.total_agendado),
+            faltas:           Number(e.faltas),
+            taxa_absenteismo: Number(e.taxa_absenteismo),
+          }))
+          .sort((a, b) => b.realizados - a.realizados),
+      }
+    }
+
     default:
       return null
   }
@@ -314,11 +489,17 @@ async function executarQuery(intencao, parametros) {
 // ── Chamada à API Anthropic ─────────────────────────────────────────────────────
 
 // Aceita userMessage (turno único) OU messagesMultiTurn (conversa completa).
-async function chamarAnthropic({ system, userMessage, messagesMultiTurn, maxTokens, temperature }) {
+// useCache=true: ativa Prompt Caching para o system prompt (apenas no narrador — ~600 tokens)
+async function chamarAnthropic({ system, userMessage, messagesMultiTurn, maxTokens, temperature, useCache }) {
   const apiKey = import.meta.env.VITE_ANTHROPIC_API_KEY
   if (!apiKey) throw new Error('VITE_ANTHROPIC_API_KEY não configurada')
 
   const mensagens = messagesMultiTurn ?? [{ role: 'user', content: userMessage }]
+
+  // Prompt Caching: serializa system como array quando useCache=true
+  const systemArg = useCache
+    ? [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }]
+    : system
 
   const resp = await fetch(ANTHROPIC_API_URL, {
     method: 'POST',
@@ -326,12 +507,13 @@ async function chamarAnthropic({ system, userMessage, messagesMultiTurn, maxToke
       'content-type':      'application/json',
       'x-api-key':         apiKey,
       'anthropic-version': '2023-06-01',
+      ...(useCache && { 'anthropic-beta': 'prompt-caching-2024-07-31' }),
     },
     body: JSON.stringify({
       model:       MODEL,
       max_tokens:  maxTokens,
       temperature: temperature ?? 0,
-      system,
+      system:      systemArg,
       messages:    mensagens,
     }),
   })
@@ -366,12 +548,28 @@ function formatTimestamp(date) {
   return new Intl.DateTimeFormat('pt-BR', { hour: '2-digit', minute: '2-digit' }).format(date)
 }
 
+const CHAT_STORAGE_KEY = 'susraiox_chat'
+
 export default function AssistenteIAPage() {
-  const [messages, setMessages]  = useState([WELCOME_MSG])
+  const [messages, setMessages] = useState(() => {
+    try {
+      const saved = localStorage.getItem(CHAT_STORAGE_KEY)
+      if (!saved) return [WELCOME_MSG]
+      return JSON.parse(saved)
+        .slice(-30)
+        .map(m => ({ ...m, timestamp: new Date(m.timestamp) }))
+    } catch { return [WELCOME_MSG] }
+  })
   const [input, setInput]        = useState('')
   const [loading, setLoading]    = useState(false)
+  const [diasPadrao, setDiasPadrao] = useState(30)
   const bottomRef                = useRef(null)
   const inputRef                 = useRef(null)
+
+  // Persiste histórico no localStorage a cada mudança
+  useEffect(() => {
+    localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(messages))
+  }, [messages])
 
   // Auto-scroll para última mensagem
   useEffect(() => {
@@ -450,7 +648,7 @@ export default function AssistenteIAPage() {
       // ── Executa RPC correspondente à intenção ───────────────────────────────
       let dadosRPC = null
       try {
-        dadosRPC = await executarQuery(intencao, parametros)
+        dadosRPC = await executarQuery(intencao, parametros, diasPadrao)
       } catch (rpcErr) {
         console.error('[AssistenteIA] RPC falhou:', rpcErr)
         addMessage('ia', RESPOSTA_ERRO)
@@ -458,9 +656,14 @@ export default function AssistenteIAPage() {
       }
 
       // ── Chamada 2: narrar os dados em linguagem natural ─────────────────────
+      const diasEfetivos = parametros?.dias || diasPadrao
+      const periodoFim    = new Date().toLocaleDateString('pt-BR')
+      const periodoInicio = new Date(Date.now() - diasEfetivos * 86_400_000).toLocaleDateString('pt-BR')
+
       const userMessageNarrador = `O gestor perguntou: "${pergunta}"
 
 Categoria identificada: ${intencao}
+Período de referência dos dados: ${periodoInicio} a ${periodoFim} (últimos ${diasEfetivos} dias)
 
 Dados retornados do sistema (JSON):
 ${JSON.stringify(dadosRPC, null, 2)}
@@ -472,6 +675,7 @@ Analise estes dados e responda a pergunta do gestor em linguagem natural.`
         userMessage: userMessageNarrador,
         maxTokens:   600,
         temperature: 0.3,
+        useCache:    true,
       })
 
       addMessage('ia', narrativa.trim())
@@ -511,6 +715,29 @@ Analise estes dados e responda a pergunta do gestor em linguagem natural.`
             </div>
             <p className="text-xs text-gray-400">Análise de dados em tempo real · Claude Sonnet</p>
           </div>
+        </div>
+        <div className="ml-auto flex items-center gap-2">
+          <span className="text-xs text-gray-400">Período:</span>
+          <select
+            value={diasPadrao}
+            onChange={e => setDiasPadrao(Number(e.target.value))}
+            className="text-xs border border-gray-200 rounded-md px-2 py-1 text-gray-600 bg-white focus:outline-none focus:ring-1 focus:ring-blue-300"
+          >
+            <option value={7}>7 dias</option>
+            <option value={30}>30 dias</option>
+            <option value={60}>60 dias</option>
+            <option value={90}>90 dias</option>
+          </select>
+          <button
+            onClick={() => {
+              localStorage.removeItem(CHAT_STORAGE_KEY)
+              setMessages([WELCOME_MSG])
+            }}
+            title="Limpar histórico"
+            className="text-xs text-gray-400 hover:text-red-500 px-1.5 py-1 rounded transition-colors"
+          >
+            ✕
+          </button>
         </div>
       </div>
 
