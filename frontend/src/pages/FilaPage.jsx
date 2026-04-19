@@ -1,6 +1,8 @@
 import { Search, Filter, Loader, CheckCircle } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import { useQueue } from '../hooks/useQueue'
+import { useEscopo } from '../contexts/EscopoContext'
+import { UBS_REGIONAL_INDEPENDENCIA } from '../constants/macrorregiao'
 import NovoEncaminhamentoModal from '../components/NovoEncaminhamentoModal'
 import AgendarModal from '../components/AgendarModal'
 
@@ -15,6 +17,7 @@ const corLabel = { vermelho: 'Emergência', amarelo: 'Urgência', verde: 'Priori
 
 export default function FilaPage() {
   const { entries, loading, refresh } = useQueue()
+  const { isRegionalIndependencia } = useEscopo()
   const [busca, setBusca] = useState('')
   const [modalOpen, setModalOpen] = useState(false)
   const [agendarEntry, setAgendarEntry] = useState(null)
@@ -37,6 +40,7 @@ export default function FilaPage() {
   }
 
   const filtrados = entries.filter(e => {
+    if (isRegionalIndependencia && !UBS_REGIONAL_INDEPENDENCIA.some(u => (e.ubs_origem ?? '').includes(u))) return false
     if (!busca) return true
     const termo = busca.toLowerCase().trim()
     return (

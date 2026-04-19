@@ -5,6 +5,8 @@ import { executarReaproveitamento } from '../lib/orquestracao'
 import { useNotifications } from '../hooks/useNotifications'
 import { useKpiConfigs } from '../hooks/useKpiConfigs'
 import { useAuth } from '../hooks/useAuth'
+import { useEscopo } from '../contexts/EscopoContext'
+import { UBS_REGIONAL_INDEPENDENCIA } from '../constants/macrorregiao'
 
 // ─── Constantes ───────────────────────────────────────────────────────────────
 
@@ -178,6 +180,7 @@ function SimularRespostaMenu({ notif, onSimular, loading }) {
 
 export default function NotificacoesPage() {
   const { user } = useAuth()
+  const { isRegionalIndependencia } = useEscopo()
   const { notifications, stats, loading, error: notifError, refresh } = useNotifications()
   const { configs } = useKpiConfigs()
 
@@ -207,7 +210,7 @@ export default function NotificacoesPage() {
       .from('appointments')
       .select(`
         id, scheduled_at, st_paciente_avisado,
-        queue_entries ( patient_id, patients ( id, nome, telefone ) ),
+        queue_entries ( patient_id, patients ( id, nome, telefone ), ubs ( nome ) ),
         equipment ( nome )
       `)
       .eq('status', 'agendado')
@@ -224,6 +227,7 @@ export default function NotificacoesPage() {
           paciente_id:      a.queue_entries?.patients?.id       ?? null,
           telefone:         a.queue_entries?.patients?.telefone ?? null,
           equipamento_nome: a.equipment?.nome ?? '—',
+          ubs_nome:         a.queue_entries?.ubs?.nome          ?? null,
         }))
       )
     }
@@ -446,13 +450,14 @@ export default function NotificacoesPage() {
   const naoNotificados = useMemo(() => {
     const seen = new Set()
     return vagasEmRisco.filter(v => {
+      if (isRegionalIndependencia && !UBS_REGIONAL_INDEPENDENCIA.some(u => (v.ubs_nome ?? '').includes(u))) return false
       if (notifiedApptIds.has(v.id)) return false  // já notificado → Board 2 ou 3
       const pid = v.paciente_id
       if (pid && seen.has(pid)) return false        // dedup seed (múltiplos appts por paciente)
       if (pid) seen.add(pid)
       return true
     })
-  }, [vagasEmRisco, notifiedApptIds])
+  }, [vagasEmRisco, notifiedApptIds, isRegionalIndependencia])
 
   // Set de appointment_ids ainda no Board 1 (safety-net para Board 2).
   const naoNotificadosApptIds = useMemo(
@@ -469,11 +474,21 @@ export default function NotificacoesPage() {
       if (n.resposta_paciente !== null)                                    return false  // respondeu → Board 3
       if (n.appointment_id && naoNotificadosApptIds.has(n.appointment_id)) return false  // safety-net: appt ainda não notificado
       if (!n.scheduled_at || new Date(n.scheduled_at) <= agora)            return false  // agendamento já passou
+      if (isRegionalIndependencia && !UBS_REGIONAL_INDEPENDENCIA.some(u => (n.ubs_nome ?? '').includes(u))) return false
       if (n.patient_id && seen.has(n.patient_id))                          return false  // dedup: mais recente vence
       if (n.patient_id) seen.add(n.patient_id)
       return true
     })
-  }, [notifications, naoNotificadosApptIds])
+  }, [notifications, naoNotificadosApptIds, isRegionalIndependencia])
+
+  // Board 3: notificações COM RESPOSTA — também filtradas por escopo.
+  const comResposta = useMemo(() => {
+    return notifications.filter(n => {
+      if (n.resposta_paciente === null) return false
+      if (isRegionalIndependencia && !UBS_REGIONAL_INDEPENDENCIA.some(u => (n.ubs_nome ?? '').includes(u))) return false
+      return true
+    })
+  }, [notifications, isRegionalIndependencia])
 
   // Adapta formato notification (Board 2) → shape de vaga (Board 1) para reutilizar notificarVaga
   function renotificarPaciente(notif) {
@@ -720,7 +735,7 @@ export default function NotificacoesPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-50">
-              {notifications.filter(n => n.resposta_paciente !== null).map((n) => {
+              {comResposta.map((n) => {
                 const cancelou = n.resposta_paciente === 'cancelou'
                 const confirmou = n.resposta_paciente === 'confirmou'
                 return (
@@ -755,7 +770,7 @@ export default function NotificacoesPage() {
                   </tr>
                 )
               })}
-              {!loading && notifications.filter(n => n.resposta_paciente !== null).length === 0 && (
+              {!loading && comResposta.length === 0 && (
                 <tr>
                   <td colSpan={5} className="px-5 py-8 text-center text-gray-400 text-sm">
                     Nenhuma notificação finalizada

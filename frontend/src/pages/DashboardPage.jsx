@@ -14,7 +14,7 @@ import { useDashboardMetrics } from '../hooks/useDashboardMetrics'
 import { useDashboardCharts } from '../hooks/useDashboardCharts'
 import { useDashboardChartsV2 } from '../hooks/useDashboardChartsV2'
 import { useEscopo } from '../contexts/EscopoContext'
-import { MUNICIPIOS_MACRORREGIAO, MUNICIPIO_SEDE } from '../constants/macrorregiao'
+import { MUNICIPIOS_MACRORREGIAO, MUNICIPIO_SEDE, UBS_REGIONAL_INDEPENDENCIA } from '../constants/macrorregiao'
 
 // ─── Tooltip customizado pt-BR ────────────────────────────────────────────────
 function TooltipBR({ active, payload, label, suffix = '' }) {
@@ -128,7 +128,7 @@ export default function DashboardPage() {
   const navigate = useNavigate()
   const [horizonte, setHorizonte] = useState(30)
   const [tipoTendencia, setTipoTendencia] = useState(null) // null = todos
-  const { isMunicipal, isMacrorregiao } = useEscopo()
+  const { isMunicipal, isMacrorregiao, isRegionalIndependencia } = useEscopo()
   const { configs } = useKpiConfigs()
   const { metrics, loading, error, refresh } = useDashboardMetrics({ horizonte })
   const { charts, loading: loadingCharts } = useDashboardCharts({ horizonte })
@@ -167,9 +167,15 @@ export default function DashboardPage() {
   // Filtros client-side por escopo geográfico — declarados ANTES de qualquer uso
   const porMunicipioFiltrado = useMemo(() => {
     if (!charts.por_municipio?.length) return []
-    const base = isMunicipal
-      ? charts.por_municipio.filter(d => d.municipio === MUNICIPIO_SEDE)
-      : charts.por_municipio.filter(d => MUNICIPIOS_MACRORREGIAO.includes(d.municipio))
+    let base
+    if (isRegionalIndependencia) {
+      // Regional Independência é dentro de Montes Claros — filtra pela sede
+      base = charts.por_municipio.filter(d => d.municipio === MUNICIPIO_SEDE)
+    } else if (isMunicipal) {
+      base = charts.por_municipio.filter(d => d.municipio === MUNICIPIO_SEDE)
+    } else {
+      base = charts.por_municipio.filter(d => MUNICIPIOS_MACRORREGIAO.includes(d.municipio))
+    }
     return base
       .map(r => ({
         municipio: r.municipio,
@@ -180,7 +186,7 @@ export default function DashboardPage() {
       }))
       .sort((a, b) => b.total - a.total)
       .slice(0, 10)
-  }, [charts.por_municipio, isMunicipal])
+  }, [charts.por_municipio, isMunicipal, isRegionalIndependencia])
 
   // Alias para uso nos gráficos
   const porMunicipioData = porMunicipioFiltrado
@@ -191,12 +197,16 @@ export default function DashboardPage() {
     const base = [...charts.ubs_menor_espera]
       .sort((a, b) => b.espera_media_dias - a.espera_media_dias)
       .slice(0, 8)
+    if (isRegionalIndependencia)
+      return base.filter(d =>
+        UBS_REGIONAL_INDEPENDENCIA.some(u => (d.ubs_nome ?? '').includes(u))
+      )
     if (isMunicipal)
       return base.filter(
         d => d.municipio === MUNICIPIO_SEDE || d.municipio === 'Montes Claros'
       )
     return base
-  }, [charts.ubs_menor_espera, isMunicipal])
+  }, [charts.ubs_menor_espera, isMunicipal, isRegionalIndependencia])
 
   // Polo macrorregional — derivado do filtro já aplicado
   const municipiosPolo = useMemo(() =>

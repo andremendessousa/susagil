@@ -13,11 +13,12 @@ export function EscopoProvider({ children }) {
     localStorage.setItem('susagil_escopo', novoEscopo)
   }
 
-  const isMunicipal    = escopo === ESCOPOS.MUNICIPAL
-  const isMacrorregiao = escopo === ESCOPOS.MACRORREGIAO
+  const isMunicipal              = escopo === ESCOPOS.MUNICIPAL
+  const isMacrorregiao           = escopo === ESCOPOS.MACRORREGIAO
+  const isRegionalIndependencia  = escopo === ESCOPOS.REGIONAL_INDEPENDENCIA
 
   return (
-    <EscopoContext.Provider value={{ escopo, mudarEscopo, isMunicipal, isMacrorregiao }}>
+    <EscopoContext.Provider value={{ escopo, mudarEscopo, isMunicipal, isMacrorregiao, isRegionalIndependencia }}>
       {children}
     </EscopoContext.Provider>
   )

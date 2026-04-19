@@ -6,6 +6,8 @@ import {
 } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 import { executarReaproveitamento } from '../lib/orquestracao'
+import { useEscopo } from '../contexts/EscopoContext'
+import { UBS_REGIONAL_INDEPENDENCIA } from '../constants/macrorregiao'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -438,7 +440,7 @@ export default function WhatsappPage() {
         .from('appointments')
         .select(`
           id, scheduled_at,
-          queue_entries ( patient_id, patients ( id, nome, cns, telefone ) ),
+          queue_entries ( patient_id, patients ( id, nome, cns, telefone ), ubs ( nome ) ),
           equipment ( nome )
         `)
         .in('status', ['agendado', 'confirmado'])
@@ -489,6 +491,7 @@ export default function WhatsappPage() {
         telefone:          appt.queue_entries?.patients?.telefone ?? notif?.telefone ?? null,
         scheduled_at:      appt.scheduled_at,
         equipamento_nome:  appt.equipment?.nome ?? notif?.equipamento_nome ?? null,
+        ubs_nome:          appt.queue_entries?.ubs?.nome ?? null,
       })
     }
 
@@ -525,6 +528,8 @@ export default function WhatsappPage() {
   // ── Contacts derivados (dedup + filtro) ────────────────────────────────────
   // allNotifs já vem deduplicado por patient_id (um item por paciente)
   const contacts = allNotifs.filter(n => {
+    if (isRegionalIndependencia &&
+        !UBS_REGIONAL_INDEPENDENCIA.some(u => (n.ubs_nome ?? '').includes(u))) return false
     if (!search.trim()) return true
     const q       = search.toLowerCase()
     const qDigits = q.replace(/\D/g, '')

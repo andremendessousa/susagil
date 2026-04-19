@@ -45,7 +45,8 @@ export function useNotifications() {
         patients ( nome, telefone ),
         appointments (
           scheduled_at,
-          equipment ( nome )
+          equipment ( nome ),
+          queue_entries ( ubs ( nome ) )
         )
       `)
       .order('enviado_at', { ascending: false })
@@ -61,6 +62,7 @@ export function useNotifications() {
         telefone:          n.patients?.telefone   ?? null,
         scheduled_at:      n.appointments?.scheduled_at ?? null,
         equipamento_nome:  n.appointments?.equipment?.nome ?? '—',
+        ubs_nome:          n.appointments?.queue_entries?.ubs?.nome ?? null,
         appointment_id:    n.appointment_id ?? null,
       }))
       setNotifications(normalized)

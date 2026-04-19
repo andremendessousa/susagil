@@ -8,7 +8,7 @@ import { BarChart2, Clock, PieChart as PieChartIcon, RotateCcw } from 'lucide-re
 import { useDashboardCharts } from '../hooks/useDashboardCharts'
 import { useKpiConfigs } from '../hooks/useKpiConfigs'
 import { useEscopo } from '../contexts/EscopoContext'
-import { MUNICIPIO_SEDE } from '../constants/macrorregiao'
+import { MUNICIPIO_SEDE, UBS_REGIONAL_INDEPENDENCIA } from '../constants/macrorregiao'
 import { supabase } from '../lib/supabase'
 
 const PERIODOS = [
@@ -77,7 +77,7 @@ export default function AnaliseGerencialPage() {
   const [horizonte, setHorizonte] = useState(30)
   const { charts, loading: loadingCharts } = useDashboardCharts({ horizonte })
   const { configs } = useKpiConfigs()
-  const { isMunicipal, isMacrorregiao } = useEscopo()
+  const { isMunicipal, isMacrorregiao, isRegionalIndependencia } = useEscopo()
 
   // ─── Painel 3: Distribuição de prioridade na fila ─────────────────────────
   const [filaDist, setFilaDist] = useState([])
@@ -216,12 +216,16 @@ export default function AnaliseGerencialPage() {
   // Dados painel 2: filtrar por escopo e ordenar por espera_media_dias DESC
   const ubsEsperaFiltradas = useMemo(() => {
     if (!charts.ubs_menor_espera?.length) return []
+    if (isRegionalIndependencia)
+      return charts.ubs_menor_espera.filter(d =>
+        UBS_REGIONAL_INDEPENDENCIA.some(u => (d.ubs_nome ?? '').includes(u))
+      )
     if (isMunicipal)
       return charts.ubs_menor_espera.filter(
         d => d.municipio === MUNICIPIO_SEDE || d.municipio === 'Montes Claros'
       )
     return charts.ubs_menor_espera
-  }, [charts.ubs_menor_espera, isMunicipal])
+  }, [charts.ubs_menor_espera, isMunicipal, isRegionalIndependencia])
 
   const ubsOrdenada = [...ubsEsperaFiltradas]
     .sort((a, b) => b.espera_media_dias - a.espera_media_dias)

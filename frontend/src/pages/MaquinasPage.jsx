@@ -6,6 +6,8 @@ import {
 import { Activity } from 'lucide-react'
 import { useEquipment } from '../hooks/useEquipment'
 import { useKpiConfigs } from '../hooks/useKpiConfigs'
+import { useEscopo } from '../contexts/EscopoContext'
+import { EXECUTANTES_REGIONAL_INDEPENDENCIA } from '../constants/macrorregiao'
 
 const PERIODOS = [
   { label: '7 dias',  value: 7  },
@@ -37,10 +39,17 @@ export default function MaquinasPage() {
   const [horizonte, setHorizonte] = useState(30)
   const { equipment, loading } = useEquipment({ horizonte })
   const { configs } = useKpiConfigs()
+  const { isRegionalIndependencia } = useEscopo()
 
   const metaCapacidade = configs?.capacidade_aproveitamento?.valor_meta ?? 85
 
-  const chartData = equipment.map(e => ({
+  const equipmentFiltrado = isRegionalIndependencia
+    ? equipment.filter(e =>
+        EXECUTANTES_REGIONAL_INDEPENDENCIA.some(u => (e.unidade_nome ?? '').includes(u))
+      )
+    : equipment
+
+  const chartData = equipmentFiltrado.map(e => ({
     nome:       String(e.equipamento_nome ?? '').slice(0, 25),
     pct:        Number(e.pct_ocupacao) || 0,
     realizados: Number(e.exames_realizados) || 0,
@@ -90,12 +99,12 @@ export default function MaquinasPage() {
         </div>
         {loading ? (
           <ChartSkeleton />
-        ) : equipment.length === 0 ? (
+        ) : equipmentFiltrado.length === 0 ? (
           <div className="h-52 flex items-center justify-center text-sm text-gray-400">
             Nenhum dado no período selecionado
           </div>
         ) : (
-          <ResponsiveContainer width="100%" height={Math.max(250, equipment.length * 44)}>
+          <ResponsiveContainer width="100%" height={Math.max(250, equipmentFiltrado.length * 44)}>
             <BarChart
               layout="vertical"
               data={chartData}
@@ -167,7 +176,7 @@ export default function MaquinasPage() {
                 <div className="h-3 w-32 bg-gray-100 rounded" />
               </div>
             ))
-          : equipment.map((eq) => {
+          : equipmentFiltrado.map((eq) => {
               const pct   = Number(eq.pct_ocupacao) || 0
               const badge = badgeInfo(pct)
               return (
@@ -203,7 +212,7 @@ export default function MaquinasPage() {
               )
             })}
 
-        {!loading && equipment.length === 0 && (
+        {!loading && equipmentFiltrado.length === 0 && (
           <div className="col-span-2 py-12 text-center text-gray-400 text-sm">
             Nenhum dado no período selecionado
           </div>
