@@ -16,7 +16,7 @@ const prioStyle = {
 const corLabel = { vermelho: 'Emergência', amarelo: 'Urgência', verde: 'Prioridade', azul: 'Rotina' }
 
 export default function FilaPage() {
-  const { entries, loading, refresh } = useQueue()
+  const { entries, loading, refresh } = useQueue({ horizonte: 365 })
   const { isRegionalIndependencia } = useEscopo()
   const [busca, setBusca] = useState('')
   const [modalOpen, setModalOpen] = useState(false)

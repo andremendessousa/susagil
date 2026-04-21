@@ -14,7 +14,7 @@ import { useDashboardMetrics } from '../hooks/useDashboardMetrics'
 import { useDashboardCharts } from '../hooks/useDashboardCharts'
 import { useDashboardChartsV2 } from '../hooks/useDashboardChartsV2'
 import { useEscopo } from '../contexts/EscopoContext'
-import { MUNICIPIOS_MACRORREGIAO, MUNICIPIO_SEDE, UBS_REGIONAL_INDEPENDENCIA } from '../constants/macrorregiao'
+import { MUNICIPIOS_MACRORREGIAO, MUNICIPIO_SEDE, UBS_REGIONAL_INDEPENDENCIA, EXECUTANTES_REGIONAL_INDEPENDENCIA } from '../constants/macrorregiao'
 
 // ─── Tooltip customizado pt-BR ────────────────────────────────────────────────
 function TooltipBR({ active, payload, label, suffix = '' }) {
@@ -129,13 +129,37 @@ export default function DashboardPage() {
   const [horizonte, setHorizonte] = useState(30)
   const [tipoTendencia, setTipoTendencia] = useState(null) // null = todos
   const { isMunicipal, isMacrorregiao, isRegionalIndependencia } = useEscopo()
+
+  // Filtros de escopo geográfico passados às RPCs via hooks.
+  // ATENÇÃO: usar useMemo para estabilizar as referências de array.
+  // Sem useMemo, [MUNICIPIO_SEDE] cria um NOVO array a cada render → Object.is() falha
+  // → useCallback recria fetch → useEffect([fetch]) dispara → setLoading(true)
+  // → re-render → novo array → loop infinito (flicker visível apenas no escopo Municipal).
+  const kpiMunicipios = useMemo(
+    () => isMunicipal ? [MUNICIPIO_SEDE] : null,
+    [isMunicipal]
+  )
+  const kpiExecutante = useMemo(
+    () => isRegionalIndependencia ? EXECUTANTES_REGIONAL_INDEPENDENCIA : null,
+    [isRegionalIndependencia]
+  )
+  const kpiUbsReg = useMemo(
+    () => isRegionalIndependencia ? UBS_REGIONAL_INDEPENDENCIA : null,
+    [isRegionalIndependencia]
+  )
+  const tendExec = useMemo(
+    () => isRegionalIndependencia ? EXECUTANTES_REGIONAL_INDEPENDENCIA : null,
+    [isRegionalIndependencia]
+  )
+
   const { configs } = useKpiConfigs()
-  const { metrics, loading, error, refresh } = useDashboardMetrics({ horizonte })
+  const { metrics, loading, error, refresh } = useDashboardMetrics({ horizonte, municipios: kpiMunicipios, executanteNomes: kpiExecutante, ubsReguladoraNomes: kpiUbsReg })
   const { charts, loading: loadingCharts } = useDashboardCharts({ horizonte })
-  // Hook secundário só para o widget de tendência (filtrável por tipo)
+  // Hook secundário só para o widget de tendência (filtrável por tipo e escopo)
   const { charts: chartsExtra, loading: loadingTendencia } = useDashboardCharts({
     horizonte,
     tipoAtendimento: tipoTendencia,
+    executanteNomes: tendExec,
   })
   const { charts2, loading2: loadingCharts2 } = useDashboardChartsV2({ horizonte })
 
@@ -158,11 +182,17 @@ export default function DashboardPage() {
     { chave: 'demanda_reprimida_dias',    metricKey: 'demanda_reprimida', icon: Users    },
   ]
 
-  // Normaliza campos das RPCs para nomes canônicos
-  const porLocalData = charts.por_local.map(r => ({
-    nome:  r.nome ?? r.equipamento_nome ?? '',
-    total: r.total ?? r.realizados ?? 0,
-  }))
+  // Normaliza campos das RPCs para nomes canônicos — filtrado por escopo
+  const porLocalData = useMemo(() => {
+    const base = charts.por_local.map(r => ({
+      nome:         r.nome ?? r.equipamento_nome ?? '',
+      total:        r.total ?? r.realizados ?? 0,
+      unidade_nome: r.unidade_nome ?? '',
+    }))
+    if (isRegionalIndependencia)
+      return base.filter(r => EXECUTANTES_REGIONAL_INDEPENDENCIA.some(u => r.unidade_nome.includes(u)))
+    return base
+  }, [charts.por_local, isRegionalIndependencia])
 
   // Filtros client-side por escopo geográfico — declarados ANTES de qualquer uso
   const porMunicipioFiltrado = useMemo(() => {
@@ -217,9 +247,51 @@ export default function DashboardPage() {
   , [porMunicipioFiltrado])
   const totalMunPolo = municipiosPolo.reduce((s, r) => s + r.total, 0)
 
+  // Ocupação filtrada por escopo (executante)
+  const ocupacaoFiltrada = useMemo(() => {
+    if (isRegionalIndependencia)
+      return (charts.ocupacao_passada ?? []).filter(r =>
+        EXECUTANTES_REGIONAL_INDEPENDENCIA.some(u => (r.unidade_nome ?? '').includes(u))
+      )
+    return charts.ocupacao_passada ?? []
+  }, [charts.ocupacao_passada, isRegionalIndependencia])
+
+  // Filtros de charts2 por escopo geográfico
+  const filaUbsFiltrada = useMemo(() => {
+    if (isRegionalIndependencia)
+      return charts2.fila_por_ubs.filter(r => UBS_REGIONAL_INDEPENDENCIA.some(u => (r.ubs_nome ?? '').includes(u)))
+    if (isMunicipal)
+      return charts2.fila_por_ubs.filter(r => r.municipio === MUNICIPIO_SEDE || r.municipio === 'Montes Claros')
+    return charts2.fila_por_ubs
+  }, [charts2.fila_por_ubs, isRegionalIndependencia, isMunicipal])
+
+  const filaClinicaFiltrada = useMemo(() => {
+    if (isRegionalIndependencia)
+      return charts2.fila_por_clinica.filter(r =>
+        EXECUTANTES_REGIONAL_INDEPENDENCIA.some(u => (r.unidade_nome ?? '').includes(u))
+      )
+    if (isMunicipal)
+      return charts2.fila_por_clinica.filter(r => r.municipio === MUNICIPIO_SEDE || r.municipio === 'Montes Claros')
+    return charts2.fila_por_clinica
+  }, [charts2.fila_por_clinica, isRegionalIndependencia, isMunicipal])
+
+  const desempenhoUbsFiltrado = useMemo(() => {
+    if (isRegionalIndependencia)
+      return charts2.desempenho_ubs.filter(r => UBS_REGIONAL_INDEPENDENCIA.some(u => (r.ubs_nome ?? '').includes(u)))
+    if (isMunicipal)
+      return charts2.desempenho_ubs.filter(r => r.municipio === MUNICIPIO_SEDE || r.municipio === 'Montes Claros')
+    return charts2.desempenho_ubs
+  }, [charts2.desempenho_ubs, isRegionalIndependencia, isMunicipal])
+
+  const esperaMunicipioFiltrado = useMemo(() => {
+    if (isRegionalIndependencia || isMunicipal)
+      return charts2.espera_municipio.filter(r => r.municipio === MUNICIPIO_SEDE || r.municipio === 'Montes Claros')
+    return charts2.espera_municipio.filter(r => MUNICIPIOS_MACRORREGIAO.includes(r.municipio))
+  }, [charts2.espera_municipio, isRegionalIndependencia, isMunicipal])
+
   // Alertas operacionais
   const absenteismoCritico = metrics?.absenteismo?.status === 'critico'
-  const qtdOciosos = (charts.ocupacao_passada ?? []).filter(r => Number(r.pct_ocupacao) < 30).length
+  const qtdOciosos = ocupacaoFiltrada.filter(r => Number(r.pct_ocupacao) < 30).length
   const temAlertas = absenteismoCritico || qtdOciosos > 0
 
   // Meta de absenteísmo para linha de referência
@@ -400,10 +472,10 @@ export default function DashboardPage() {
             titulo="Ocupação por equipamento"
             pergunta="Qual equipamento está sendo mais utilizado?"
             loading={loadingCharts}
-            vazio={charts.ocupacao_passada.length === 0}
+            vazio={ocupacaoFiltrada.length === 0}
           >
             <ResponsiveContainer width="100%" height={300}>
-              <BarChart layout="vertical" data={charts.ocupacao_passada} margin={{ left: 0, right: 50, top: 4, bottom: 4 }}>
+              <BarChart layout="vertical" data={ocupacaoFiltrada} margin={{ left: 0, right: 50, top: 4, bottom: 4 }}>
                 <XAxis type="number" unit="%" domain={[0, 100]} tick={{ fontSize: 11 }} tickLine={false} axisLine={false} />
                 <YAxis type="category" dataKey="equipamento_nome" width={140} tick={{ fontSize: 11 }} tickLine={false} />
                 <Tooltip content={(props) => <TooltipBR {...props} suffix="%" />} />
@@ -414,7 +486,7 @@ export default function DashboardPage() {
                   label={{ value: 'Meta 85%', position: 'top', fontSize: 10, fill: '#16a34a' }}
                 />
                 <Bar dataKey="pct_ocupacao" name="Ocupação (%)" radius={[0, 3, 3, 0]}>
-                  {charts.ocupacao_passada.map((entry, i) => {
+                  {ocupacaoFiltrada.map((entry, i) => {
                     const p = Number(entry.pct_ocupacao)
                     return <Cell key={i} fill={p >= 85 ? '#16a34a' : p >= 50 ? '#d97706' : '#dc2626'} />
                   })}
@@ -605,12 +677,12 @@ export default function DashboardPage() {
           titulo="Volume de fila por UBS"
           pergunta="Quais UBSs têm mais pacientes aguardando?"
           loading={loadingCharts2}
-          vazio={charts2.fila_por_ubs.length === 0}
+          vazio={filaUbsFiltrada.length === 0}
         >
           <ResponsiveContainer width="100%" height={300}>
             <BarChart
               layout="vertical"
-              data={charts2.fila_por_ubs.slice(0, 10)}
+              data={filaUbsFiltrada.slice(0, 10)}
               margin={{ left: 0, right: 50, top: 4, bottom: 4 }}
             >
               <XAxis
@@ -651,12 +723,12 @@ export default function DashboardPage() {
           titulo="Carga de agenda por equipamento"
           pergunta="Qual clínica está mais sobrecarregada?"
           loading={loadingCharts2}
-          vazio={charts2.fila_por_clinica.length === 0}
+          vazio={filaClinicaFiltrada.length === 0}
         >
           <ResponsiveContainer width="100%" height={300}>
             <BarChart
               layout="vertical"
-              data={charts2.fila_por_clinica.slice(0, 10)}
+              data={filaClinicaFiltrada.slice(0, 10)}
               margin={{ left: 0, right: 50, top: 4, bottom: 4 }}
             >
               <XAxis
@@ -698,7 +770,7 @@ export default function DashboardPage() {
                 label={{ value: 'Meta 85%', position: 'top', fontSize: 10, fill: '#16a34a' }}
               />
               <Bar dataKey="pct_carga_fila" name="Carga (%)" radius={[0, 3, 3, 0]}>
-                {charts2.fila_por_clinica.slice(0, 10).map((entry, i) => {
+                {filaClinicaFiltrada.slice(0, 10).map((entry, i) => {
                   const p = Number(entry.pct_carga_fila)
                   return <Cell key={i} fill={p >= 85 ? '#16a34a' : p >= 50 ? '#d97706' : '#dc2626'} />
                 })}
@@ -716,12 +788,12 @@ export default function DashboardPage() {
           titulo="Ranking de desempenho por UBS"
           pergunta="Qual UBS combina menos faltas e menor espera?"
           loading={loadingCharts2}
-          vazio={charts2.desempenho_ubs.length === 0}
+          vazio={desempenhoUbsFiltrado.length === 0}
         >
           <ResponsiveContainer width="100%" height={300}>
             <BarChart
               layout="vertical"
-              data={charts2.desempenho_ubs.slice(0, 10)}
+              data={desempenhoUbsFiltrado.slice(0, 10)}
               margin={{ left: 0, right: 50, top: 4, bottom: 4 }}
             >
               <XAxis
@@ -754,7 +826,7 @@ export default function DashboardPage() {
                 }}
               />
               <Bar dataKey="score_composto" name="Score" radius={[0, 3, 3, 0]}>
-                {charts2.desempenho_ubs.slice(0, 10).map((entry, i) => {
+                {desempenhoUbsFiltrado.slice(0, 10).map((entry, i) => {
                   const s = Number(entry.score_composto)
                   return <Cell key={i} fill={s >= 80 ? '#16a34a' : s >= 60 ? '#d97706' : '#dc2626'} />
                 })}
@@ -813,11 +885,11 @@ export default function DashboardPage() {
         titulo="Espera e absenteísmo por município"
         pergunta="Qual município tem maior tempo de espera?"
         loading={loadingCharts2}
-        vazio={charts2.espera_municipio.length === 0}
+        vazio={esperaMunicipioFiltrado.length === 0}
       >
         <ResponsiveContainer width="100%" height={320}>
           <BarChart
-            data={charts2.espera_municipio.slice(0, 15)}
+            data={esperaMunicipioFiltrado.slice(0, 15)}
             margin={{ top: 4, right: 12, bottom: 60, left: 0 }}
           >
             <XAxis

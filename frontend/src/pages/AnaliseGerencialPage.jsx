@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import {
   BarChart, Bar, XAxis, YAxis, ReferenceLine,
   PieChart, Pie,
@@ -8,7 +8,7 @@ import { BarChart2, Clock, PieChart as PieChartIcon, RotateCcw } from 'lucide-re
 import { useDashboardCharts } from '../hooks/useDashboardCharts'
 import { useKpiConfigs } from '../hooks/useKpiConfigs'
 import { useEscopo } from '../contexts/EscopoContext'
-import { MUNICIPIO_SEDE, UBS_REGIONAL_INDEPENDENCIA } from '../constants/macrorregiao'
+import { MUNICIPIO_SEDE, UBS_REGIONAL_INDEPENDENCIA, EXECUTANTES_REGIONAL_INDEPENDENCIA } from '../constants/macrorregiao'
 import { supabase } from '../lib/supabase'
 
 const PERIODOS = [
@@ -84,20 +84,26 @@ export default function AnaliseGerencialPage() {
   const [loadingFila, setLoadingFila] = useState(true)
   const [filaRt, setFilaRt] = useState(0)   // tick: incrementado pelo Realtime de queue_entries
 
+  // Skeleton apenas na primeira carga ou quando o escopo muda—Realtime é silencioso
+  const filaLoadedRef = useRef(false)
+  useEffect(() => { filaLoadedRef.current = false }, [isRegionalIndependencia])
+
   useEffect(() => {
     let mounted = true
     async function fetchFila() {
-      setLoadingFila(true)
+      if (!filaLoadedRef.current) setLoadingFila(true)
       try {
         const { data } = await supabase
           .from('queue_entries')
-          .select('cor_risco')
+          .select('cor_risco, ubs ( nome )')
           .eq('status_local', 'aguardando')
 
         if (!mounted) return
 
         const grouped = { azul: 0, vermelho: 0, amarelo: 0, verde: 0 }
         for (const row of data ?? []) {
+          if (isRegionalIndependencia &&
+              !UBS_REGIONAL_INDEPENDENCIA.some(u => (row.ubs?.nome ?? '').includes(u))) continue
           const key = row.cor_risco?.toLowerCase()
           if (key in grouped) grouped[key]++
         }
@@ -111,13 +117,14 @@ export default function AnaliseGerencialPage() {
               fill:  RISCO_COLORS[cor] ?? '#6b7280',
             }))
         )
+        filaLoadedRef.current = true
       } finally {
         if (mounted) setLoadingFila(false)
       }
     }
     fetchFila()
     return () => { mounted = false }
-  }, [filaRt])
+  }, [filaRt, isRegionalIndependencia])
 
   // ─── Painel 4: Reaproveitamento de vagas ─────────────────────────────────
   // cancelados: denominador correto — cancelamento antecipado é oportunidade de gestão, não falta
@@ -126,12 +133,20 @@ export default function AnaliseGerencialPage() {
   const [reaprovTick, setReaprovTick] = useState(0)       // incrementado pelo realtime
   const [vagasRecuperadas, setVagasRecuperadas] = useState(0)
 
+  // Skeleton apenas na primeira carga ou quando horizonte/configs mudam—Realtime é silencioso
+  const reaprovLoadedRef = useRef(false)
+  useEffect(() => { reaprovLoadedRef.current = false }, [horizonte, configs])
+
   useEffect(() => {
     let mounted = true
     async function fetchReaprov() {
       // Aguarda configs para obter a janela hábil configurada no banco
-      if (!configs) return
-      setLoadingReaprov(true)
+      if (!configs) {
+        // configs ainda carregando: não deixar loadingReaprov travado em true
+        if (mounted) setLoadingReaprov(false)
+        return
+      }
+      if (!reaprovLoadedRef.current) setLoadingReaprov(true)
       try {
         const janelaHoras = configs?.reaproveitamento_janela_horas?.valor_meta ?? 48
 
@@ -155,6 +170,7 @@ export default function AnaliseGerencialPage() {
           reaproveitados: data?.vagas_reaproveitadas   ?? 0,
           taxa:          data?.taxa_reaproveitamento  ?? 0,
         })
+        reaprovLoadedRef.current = true
       } finally {
         if (mounted) setLoadingReaprov(false)
       }
@@ -213,6 +229,15 @@ export default function AnaliseGerencialPage() {
     taxaReaprovNum >= metaReaprov * 0.7      ? '#ca8a04' :
                                                '#dc2626'
 
+  // Absenteísmo por executante — filtrado por escopo
+  const absenteismoFiltrado = useMemo(() => {
+    if (isRegionalIndependencia)
+      return charts.absenteismo_executante.filter(r =>
+        EXECUTANTES_REGIONAL_INDEPENDENCIA.some(u => (r.unidade_nome ?? '').includes(u))
+      )
+    return charts.absenteismo_executante
+  }, [charts.absenteismo_executante, isRegionalIndependencia])
+
   // Dados painel 2: filtrar por escopo e ordenar por espera_media_dias DESC
   const ubsEsperaFiltradas = useMemo(() => {
     if (!charts.ubs_menor_espera?.length) return []
@@ -265,12 +290,12 @@ export default function AnaliseGerencialPage() {
           titulo="Absenteísmo por unidade executante"
           subtitulo="Qual hospital/clínica tem maior taxa de falta?"
           loading={loadingCharts}
-          vazio={charts.absenteismo_executante.length === 0}
+          vazio={absenteismoFiltrado.length === 0}
         >
           <ResponsiveContainer width="100%" height={300}>
             <BarChart
               layout="vertical"
-              data={charts.absenteismo_executante}
+              data={absenteismoFiltrado}
               margin={{ left: 0, right: 50, top: 4, bottom: 4 }}
             >
               <XAxis
@@ -305,13 +330,13 @@ export default function AnaliseGerencialPage() {
                   )
                 }}
               />
-              {charts.absenteismo_executante[0]?.meta_absenteismo != null && (
+              {absenteismoFiltrado[0]?.meta_absenteismo != null && (
                 <ReferenceLine
                   x={charts.absenteismo_executante[0].meta_absenteismo}
                   stroke="#16a34a"
                   strokeDasharray="4 3"
                   label={{
-                    value: `Meta ${charts.absenteismo_executante[0].meta_absenteismo}%`,
+                    value: `Meta ${absenteismoFiltrado[0].meta_absenteismo}%`,
                     position: 'top',
                     fontSize: 10,
                     fill: '#16a34a',
@@ -319,7 +344,7 @@ export default function AnaliseGerencialPage() {
                 />
               )}
               <Bar dataKey="taxa_absenteismo" radius={[0, 3, 3, 0]}>
-                {charts.absenteismo_executante.map((entry, i) => {
+                {absenteismoFiltrado.map((entry, i) => {
                   const taxa = Number(entry.taxa_absenteismo)
                   const meta = Number(entry.meta_absenteismo)
                   const color = taxa > meta * 2 ? '#dc2626' : taxa > meta ? '#ca8a04' : '#16a34a'
@@ -336,7 +361,7 @@ export default function AnaliseGerencialPage() {
           titulo="Tempo de espera por UBS encaminhadora"
           subtitulo="De onde vêm os pacientes que mais esperam?"
           loading={loadingCharts}
-          vazio={charts.ubs_menor_espera.length === 0}
+          vazio={ubsOrdenada.length === 0}
         >
           <div className="overflow-auto max-h-72">
             <table className="w-full text-xs">

@@ -3,20 +3,28 @@ import { supabase } from '../lib/supabase'
 import { useKpiConfigs } from './useKpiConfigs'
 import { calcularStatus } from './lib/calcularStatus'
 
-export function useDashboardMetrics({ horizonte = 30, tipoAtendimento = null } = {}) {
+export function useDashboardMetrics({ horizonte = 30, tipoAtendimento = null, municipios = null, executanteNomes = null, ubsReguladoraNomes = null } = {}) {
   const { configs } = useKpiConfigs()
   const [metrics, setMetrics] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
 
+  // Skeleton apenas na primeira carga ou quando parâmetros mudam.
+  // Refetches do Realtime são silenciosos — evita flicker.
+  const showSkeletonRef = useRef(true)
+
   const fetch = useCallback(async () => {
     if (!configs) return
-    setLoading(true)
+    if (showSkeletonRef.current) setLoading(true)
+    showSkeletonRef.current = false
     setError(null)
 
     // Parâmetros derivados de configs — sem hardcode
+    // p_dias_limite: protocolo SUS — pacientes aguardando >30 dias são "demanda reprimida".
+    // Não usa configs.espera_media_dias (que é o limite de espera média = 120d),
+    // pois 120d zero-out toda a demanda reprimida demo com seed de 54d máximo.
     const janelaHoras     = configs.reaproveitamento_janela_horas?.valor_meta ?? 48
-    const diasLimite      = configs.espera_media_dias?.valor_meta ?? 120
+    const diasLimite      = configs.demanda_reprimida_limite_dias?.valor_meta  ?? 30
     const vagasRiscoHoras = configs.vagas_risco_horas?.valor_meta ?? 48
 
     try {
@@ -31,13 +39,13 @@ export function useDashboardMetrics({ horizonte = 30, tipoAtendimento = null } =
         ocupacaoFutura,
         vagasRisco,
       ] = await Promise.all([
-        supabase.rpc('calcular_absenteismo',            { p_horizonte_dias: horizonte, p_tipo_atendimento: tipoAtendimento }),
-        supabase.rpc('calcular_tempo_medio_espera',     { p_horizonte_dias: horizonte, p_tipo_atendimento: tipoAtendimento }),
+        supabase.rpc('calcular_absenteismo',            { p_horizonte_dias: horizonte, p_tipo_atendimento: tipoAtendimento, p_municipios: municipios, p_executante_nomes: executanteNomes }),
+        supabase.rpc('calcular_tempo_medio_espera',     { p_horizonte_dias: horizonte, p_tipo_atendimento: tipoAtendimento, p_municipios: municipios, p_ubs_reguladora_nomes: ubsReguladoraNomes }),
         supabase.rpc('calcular_taxa_confirmacao_ativa', { p_horizonte_dias: horizonte, p_tipo_atendimento: tipoAtendimento }),
         supabase.rpc('calcular_taxa_reaproveitamento',  { p_horizonte_dias: horizonte, p_tipo_atendimento: tipoAtendimento, p_janela_horas: janelaHoras }),
         supabase.rpc('calcular_indice_satisfacao',      { p_horizonte_dias: horizonte, p_tipo_atendimento: tipoAtendimento }),
-        supabase.rpc('calcular_demanda_reprimida',      { p_horizonte_dias: horizonte, p_tipo_atendimento: tipoAtendimento, p_dias_limite: diasLimite }),
-        supabase.rpc('fn_ocupacao_passada',             { p_dias_atras: horizonte,    p_tipo_atendimento: tipoAtendimento }),
+        supabase.rpc('calcular_demanda_reprimida',      { p_horizonte_dias: horizonte, p_tipo_atendimento: tipoAtendimento, p_dias_limite: diasLimite, p_municipios: municipios, p_ubs_reguladora_nomes: ubsReguladoraNomes }),
+        supabase.rpc('fn_ocupacao_passada',             { p_dias_atras: horizonte,    p_tipo_atendimento: tipoAtendimento, p_municipios: municipios, p_executante_nomes: executanteNomes }),
         supabase.rpc('fn_ocupacao_futura',              { p_dias_a_frente: 7,         p_tipo_atendimento: tipoAtendimento }),
         // Vagas em risco: futuros na janela configurada que ainda não foram confirmados
         supabase
@@ -96,9 +104,13 @@ export function useDashboardMetrics({ horizonte = 30, tipoAtendimento = null } =
     } finally {
       setLoading(false)
     }
-  }, [horizonte, tipoAtendimento, configs])
+  }, [horizonte, tipoAtendimento, municipios, executanteNomes, ubsReguladoraNomes, configs])
 
-  useEffect(() => { fetch() }, [fetch])
+  // Restaura skeleton quando os parâmetros mudam
+  useEffect(() => {
+    showSkeletonRef.current = true
+    fetch()
+  }, [fetch])
 
   // Ref estável apontando sempre para a função fetch mais recente.
   // Permite criar o canal Realtime uma única vez (sem re-subscrição a cada mudança de deps).

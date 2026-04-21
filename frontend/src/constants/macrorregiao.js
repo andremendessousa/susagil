@@ -21,16 +21,15 @@ export const ESCOPOS = {
 // UBSs que compõem a Regional Independência
 // Devem corresponder EXATAMENTE ao campo ubs.nome no banco
 export const UBS_REGIONAL_INDEPENDENCIA = [
-  'ESF Ônix',
-  'ESF Coral — Ibituruna',
-  'ESF Santos Reis',
-  'ESF Alto Boa Vista',
+  'Independência II',
 ]
 
-// UBS executante (prestadora) que atende a Regional Independência
+// UBS executante principal que atende a Regional Independência
 // Usada para filtrar MaquinasPage quando isRegionalIndependencia=true
+// Todos os hospitais atendem qualquer UBS, mas HU Clemente é o executor
+// primário do piloto Independência
 export const EXECUTANTES_REGIONAL_INDEPENDENCIA = [
-  'HU Clemente de Faria',
+  'HU Clemente de Faria — Ortopedia',
 ]
 
 export const REGIONAL_INDEPENDENCIA_META = {

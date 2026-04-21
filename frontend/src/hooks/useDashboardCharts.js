@@ -16,7 +16,7 @@ import { supabase } from '../lib/supabase'
  *   ubs_menor_espera:       Array<{ ubs_nome, municipio, espera_media_dias, meta_espera_dias, ... }>
  * }
  */
-export function useDashboardCharts({ horizonte = 30, tipoAtendimento = null } = {}) {
+export function useDashboardCharts({ horizonte = 30, tipoAtendimento = null, executanteNomes = null } = {}) {
   const [charts, setCharts] = useState({
     tendencia:              [],
     por_local:              [],
@@ -28,8 +28,13 @@ export function useDashboardCharts({ horizonte = 30, tipoAtendimento = null } = 
   const [loading, setLoading] = useState(true)
   const [error, setError]     = useState(null)
 
+  // Skeleton apenas na primeira carga ou quando os parâmetros mudam.
+  // Refetches silenciosos do Realtime não piscam o skeleton — evita flicker.
+  const showSkeletonRef = useRef(true)
+
   const fetch = useCallback(async () => {
-    setLoading(true)
+    if (showSkeletonRef.current) setLoading(true)
+    showSkeletonRef.current = false
     setError(null)
 
     const results = await Promise.allSettled([
@@ -37,6 +42,7 @@ export function useDashboardCharts({ horizonte = 30, tipoAtendimento = null } = 
         p_horizonte_dias:   horizonte,
         p_tipo_atendimento: tipoAtendimento,
         p_media_movel_dias: 7,
+        p_executante_nomes: executanteNomes,
       }),
       supabase.rpc('get_exames_por_local', {
         p_horizonte_dias:   horizonte,
@@ -85,9 +91,13 @@ export function useDashboardCharts({ horizonte = 30, tipoAtendimento = null } = 
 
     setError(erros.length > 0 ? erros.join(' | ') : null)
     setLoading(false)
-  }, [horizonte, tipoAtendimento])
+  }, [horizonte, tipoAtendimento, executanteNomes])
 
-  useEffect(() => { fetch() }, [fetch])
+  // Restaura skeleton quando os parâmetros mudam (nova seleção de período/tipo/escopo)
+  useEffect(() => {
+    showSkeletonRef.current = true
+    fetch()
+  }, [fetch])
 
   // Ref estável apontando sempre para a função fetch mais recente.
   // Permite criar o canal Realtime uma única vez, mesmo com múltiplas instâncias do hook.

@@ -402,6 +402,8 @@ function PainelPaciente({ notif, pacienteNome, saving, resultado, chatNotifs, on
 // ─── WhatsappPage ─────────────────────────────────────────────────────────────
 
 export default function WhatsappPage() {
+  const { isRegionalIndependencia } = useEscopo()
+
   // ── Contacts ────────────────────────────────────────────────────────────────
   const [allNotifs, setAllNotifs]           = useState([])
   const [loadingContacts, setLoadingContacts] = useState(true)
