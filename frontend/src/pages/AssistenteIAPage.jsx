@@ -36,6 +36,19 @@ Você pode me perguntar sobre:
 • Tendência temporal das faltas ao longo dos dias
 • Recomendações de ação prioritárias
 
+Notificações — Pacientes:
+• "Quantos pacientes foram notificados hoje?"
+• "Os pacientes estão respondendo às notificações?"
+• "Como está o nível de cancelamento de consultas?"
+• "Como está o nível de cancelamento de exames?"
+• "Conseguimos recuperar vagas de pacientes que cancelaram?"
+
+Agenda — Profissionais e Clínicas:
+• "Os médicos confirmaram disponibilidade pra amanhã?"
+• "Tem alguma agenda cancelada ou com impedimento?"
+• "Qual clínica ainda não respondeu à notificação?"
+• "Quem reportou impedimento esta semana?"
+
 Pergunte com suas próprias palavras — por exemplo:
 "Como está a fila hoje?", "Qual UBS tem maior represamento?" ou "Quais exames têm mais demanda?"`
 
@@ -49,6 +62,8 @@ const RESPOSTA_FORA_ESCOPO = `Entendo sua pergunta, mas ela está fora do que co
 • Espera e absenteísmo por município de origem
 • Tendência temporal das faltas
 • Recomendações de ação baseadas nos dados
+• Notificações de pacientes — taxa de resposta e cancelamentos
+• Agenda de profissionais — confirmações e impedimentos
 
 Tente reformular sua pergunta focando em um desses temas.`
 
@@ -112,6 +127,18 @@ Categorias válidas:
 - exames_por_local: volume de exames efetivamente realizados por local ou equipamento executante
   Ex: "quais locais fizeram mais exames?", "volume por local", "onde realizaram mais?", "produção por equipamento", "qual local produziu mais?", "ranking de produção"
 
+- notificacoes_pacientes: quantidade de notificações enviadas aos pacientes, taxa de resposta, engajamento com as mensagens enviadas via WhatsApp
+  Ex: "quantos pacientes foram notificados hoje?", "os pacientes estão respondendo?", "como está a taxa de confirmação dos pacientes?", "quantos responderam às mensagens?", "qual a adesão às notificações?", "os avisos estão funcionando?"
+
+- cancelamentos_vagas: nível de cancelamentos pelos pacientes (consultas ou exames) e recuperação de vagas pelo sistema de reaproveitamento
+  Ex: "como está o cancelamento de consultas?", "como está o cancelamento de exames?", "conseguimos recuperar vagas?", "quão eficiente está o reaproveitamento?", "os pacientes estão cancelando muito?", "quantas vagas foram liberadas?"
+
+- agenda_profissionais: confirmação de disponibilidade pelos médicos, técnicos e clínicas parceiras nas próximas 72h; quem confirmou e quem ainda não respondeu à solicitação
+  Ex: "os médicos confirmaram pra amanhã?", "tem agenda confirmada?", "qual clínica não respondeu?", "quem ainda não confirmou disponibilidade?", "as clínicas estão confirmando?", "como está a agenda dos profissionais?", "os profissionais responderam a notificação?"
+
+- agenda_indisponibilidades: profissionais ou clínicas que reportaram impedimento, motivos declarados de indisponibilidade
+  Ex: "tem agenda cancelada?", "quem reportou impedimento?", "quais profissionais estão indisponíveis?", "qual o motivo dos impedimentos?", "tem algum médico que disse que não pode atender?", "quais são os impedimentos registrados?", "alguém cancelou a agenda?"
+
 - fora_de_escopo: qualquer coisa que não se encaixe nas categorias acima
 
 Responda APENAS com JSON válido, sem markdown, sem explicação:
@@ -134,6 +161,13 @@ Unidades executantes atuais: Hospital Aroldo Tourinho, Hospital Universitário (
 Siglas: US = Ultrassom | RX = Raio-X | TC = Tomografia Computadorizada | MRI = Ressonância Magnética.
 Metas do edital CPSI 004/2026: absenteísmo ≤ 15% | espera ≤ 120 dias | capacidade ≥ 85% | satisfação > 8/10.
 Dado "espera por UBS" = tempo médio de espera dos pacientes encaminhados por cada UBS de origem — NÃO é taxa de absenteísmo.
+
+--- NOTIFICAÇÕES E AGENDA PROFISSIONAL ---
+notification_log: comunicações com pacientes via WhatsApp. Campos relevantes: enviado_at, resposta_paciente ("confirmou" | "cancelou" | null = sem resposta), tipo ("72h" | "24h" | "2h" | "lembrete_manual").
+professional_confirmations: comunicações com médicos, técnicos e clínicas parceiras. status_resposta: "confirmou_disponibilidade" | "reportou_indisponibilidade" | null (aguardando).
+Pacientes protegidos = appointments ativos que coincidiam com slots onde o profissional reportou indisponibilidade — representa deslocamentos evitados pelo aviso prévio do sistema.
+Tipos de profissional: medico | tecnico | clinica_parceira (contato institucional do setor/serviço).
+Janela padrão de confirmação profissional: próximas 72 horas.
 
 --- REGRAS DE RESPOSTA ---
 - Sempre mencione os números relevantes (percentuais, contagens, dias)
@@ -478,6 +512,157 @@ async function executarQuery(intencao, parametros, diasPadrao = 30) {
             taxa_absenteismo: Number(e.taxa_absenteismo),
           }))
           .sort((a, b) => b.realizados - a.realizados),
+      }
+    }
+
+    // ── DOMÍNIO: Notificações de Pacientes ──────────────────────────────────
+
+    case 'notificacoes_pacientes': {
+      const [confirmacaoRPC, logsRes] = await Promise.all([
+        supabase.rpc('calcular_taxa_confirmacao_ativa', { p_horizonte_dias: dias, p_tipo_atendimento: null }),
+        supabase
+          .from('notification_log')
+          .select('id, tipo, enviado_at, resposta_paciente, respondido_at')
+          .gte('enviado_at', new Date(Date.now() - dias * 86_400_000).toISOString())
+          .order('enviado_at', { ascending: false }),
+      ])
+      const logs = logsRes.data || []
+      const hoje = new Date(); hoje.setHours(0, 0, 0, 0)
+      const notificados_hoje  = logs.filter(n => n.enviado_at && new Date(n.enviado_at) >= hoje).length
+      const com_resposta      = logs.filter(n => n.resposta_paciente).length
+      const confirmaram       = logs.filter(n => n.resposta_paciente === 'confirmou').length
+      const cancelaram        = logs.filter(n => n.resposta_paciente === 'cancelou').length
+      const sem_resposta      = logs.filter(n => !n.resposta_paciente).length
+      const taxa_resposta_pct = logs.length > 0 ? Math.round(com_resposta / logs.length * 100) : null
+      const por_tipo = Object.fromEntries(
+        ['72h', '24h', '2h', 'lembrete_manual'].map(t => [t, logs.filter(n => n.tipo === t).length])
+      )
+      return {
+        periodo_dias:         dias,
+        total_notificacoes:   logs.length,
+        notificados_hoje,
+        com_resposta,
+        sem_resposta,
+        confirmaram,
+        cancelaram,
+        taxa_resposta_pct,
+        taxa_confirmacao_rpc: confirmacaoRPC.data?.taxa_confirmacao ?? null,
+        por_tipo,
+      }
+    }
+
+    case 'cancelamentos_vagas': {
+      const [reaprovRes, cancelRes] = await Promise.all([
+        supabase.rpc('calcular_taxa_reaproveitamento', {
+          p_horizonte_dias:   dias,
+          p_tipo_atendimento: null,
+          p_janela_horas:     48,
+        }),
+        supabase
+          .from('notification_log')
+          .select('id, respondido_at, appointments ( tipo_vaga, equipment ( nome ) )')
+          .eq('resposta_paciente', 'cancelou')
+          .gte('respondido_at', new Date(Date.now() - dias * 86_400_000).toISOString()),
+      ])
+      const cancelados = cancelRes.data || []
+      const por_tipo = {}
+      for (const n of cancelados) {
+        const tipo = n.appointments?.tipo_vaga ?? 'outros'
+        por_tipo[tipo] = (por_tipo[tipo] || 0) + 1
+      }
+      return {
+        periodo_dias:                 dias,
+        total_cancelamentos_paciente: cancelados.length,
+        taxa_reaproveitamento_pct:    reaprovRes.data?.taxa_reaproveitamento ?? null,
+        cancelamentos_por_tipo:       Object.entries(por_tipo)
+          .map(([tipo, count]) => ({ tipo, count }))
+          .sort((a, b) => b.count - a.count),
+      }
+    }
+
+    // ── DOMÍNIO: Agenda de Profissionais ────────────────────────────────────
+
+    case 'agenda_profissionais': {
+      const [kpisRes, confirmacoesRes] = await Promise.all([
+        supabase.rpc('rpc_kpis_profissionais', { p_horizonte_horas: 72 }),
+        supabase
+          .from('professional_confirmations')
+          .select(`
+            id, status_resposta, enviado_at, respondido_at,
+            profissionais ( nome, tipo, cargo ),
+            appointments ( scheduled_at, equipment ( nome, ubs ( nome ) ) )
+          `)
+          .order('enviado_at', { ascending: false })
+          .limit(60),
+      ])
+      const confs        = confirmacoesRes.data || []
+      const aguardando   = confs.filter(c => !c.status_resposta).length
+      const confirmaram_c = confs.filter(c => c.status_resposta === 'confirmou_disponibilidade').length
+      const indisp_c     = confs.filter(c => c.status_resposta === 'reportou_indisponibilidade').length
+      const sem_resposta_lista = confs
+        .filter(c => !c.status_resposta)
+        .slice(0, 10)
+        .map(c => ({
+          nome:          c.profissionais?.nome ?? '—',
+          tipo:          c.profissionais?.tipo ?? null,
+          equipamento:   c.appointments?.equipment?.nome ?? '—',
+          ubs:           c.appointments?.equipment?.ubs?.nome ?? '—',
+          agendado_para: c.appointments?.scheduled_at ?? null,
+        }))
+      return {
+        janela_horas: 72,
+        kpis: {
+          agendas_confirmadas_pct:  kpisRes.data?.agendas_confirmadas_pct ?? null,
+          equip_confirmaram:        Number(kpisRes.data?.equip_confirmaram ?? 0),
+          equip_com_agenda:         Number(kpisRes.data?.equip_com_agenda  ?? 0),
+          indisponibilidades_count: Number(kpisRes.data?.indisponibilidades_count ?? 0),
+          pacientes_protegidos:     Number(kpisRes.data?.pacientes_protegidos ?? 0),
+        },
+        status_geral: {
+          total_notificacoes_enviadas: confs.length,
+          confirmaram:                confirmaram_c,
+          aguardando_resposta:        aguardando,
+          reportaram_impedimento:     indisp_c,
+        },
+        sem_resposta: sem_resposta_lista,
+      }
+    }
+
+    case 'agenda_indisponibilidades': {
+      const { data } = await supabase
+        .from('professional_confirmations')
+        .select(`
+          id, status_resposta, motivo_indisponibilidade, respondido_at,
+          profissionais ( nome, tipo, cargo ),
+          appointments ( scheduled_at, equipment ( nome, ubs ( nome ) ) )
+        `)
+        .eq('status_resposta', 'reportou_indisponibilidade')
+        .gte('respondido_at', new Date(Date.now() - dias * 86_400_000).toISOString())
+        .order('respondido_at', { ascending: false })
+      const rows = data || []
+      if (rows.length === 0) {
+        return { aviso: `Nenhuma indisponibilidade reportada nos últimos ${dias} dias.`, periodo_dias: dias }
+      }
+      const por_motivo = {}
+      for (const r of rows) {
+        const m = r.motivo_indisponibilidade ?? 'Não informado'
+        por_motivo[m] = (por_motivo[m] || 0) + 1
+      }
+      return {
+        periodo_dias:             dias,
+        total_indisponibilidades: rows.length,
+        por_motivo:               Object.entries(por_motivo)
+          .map(([motivo, count]) => ({ motivo, count }))
+          .sort((a, b) => b.count - a.count),
+        casos: rows.map(r => ({
+          profissional:  r.profissionais?.nome ?? '—',
+          tipo:          r.profissionais?.tipo ?? null,
+          equipamento:   r.appointments?.equipment?.nome ?? '—',
+          ubs:           r.appointments?.equipment?.ubs?.nome ?? '—',
+          agendado_para: r.appointments?.scheduled_at ?? null,
+          motivo:        r.motivo_indisponibilidade ?? 'Não informado',
+          reportado_em:  r.respondido_at,
+        })),
       }
     }
 
