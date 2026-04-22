@@ -8,6 +8,7 @@ import NotificacoesPage from './pages/NotificacoesPage.jsx'
 import AnaliseGerencialPage from './pages/AnaliseGerencialPage.jsx'
 import WhatsappPage from './pages/WhatsappPage.jsx'
 import AssistenteIAPage from './pages/AssistenteIAPage.jsx'
+import GestaoFilaProfissionaisPage from './pages/GestaoFilaProfissionaisPage.jsx'
 import LoginPage from './pages/LoginPage.jsx'
 import { useAuth } from './hooks/useAuth.js'
 
@@ -35,6 +36,7 @@ export default function App() {
         <Route path="maquinas" element={<MaquinasPage />} />
         <Route path="analise" element={<AnaliseGerencialPage />} />
         <Route path="notificacoes" element={<NotificacoesPage />} />
+        <Route path="profissionais" element={<GestaoFilaProfissionaisPage />} />
         <Route path="whatsapp" element={<WhatsappPage />} />
         <Route path="assistente" element={<AssistenteIAPage />} />
         <Route path="configuracoes" element={<ConfiguracoesPage />} />
