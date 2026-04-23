@@ -7,15 +7,15 @@ import { SeletorEscopo } from './SeletorEscopo'
 import { useEscopo } from '../contexts/EscopoContext'
 
 const baseNav = [
-  { to: '/dashboard',     icon: LayoutDashboard, label: 'Dashboard'        },
-  { to: '/fila',          icon: ListOrdered,     label: 'Fila de Exames'  },
-  { to: '/maquinas',      icon: Monitor,         label: 'Equipamentos'    },
-  { to: '/analise',       icon: BarChart2,       label: 'Análise Gerencial' },
-  { to: '/notificacoes',  icon: Bell,            label: 'Notificações'    },
-  { to: '/profissionais', icon: Stethoscope,     label: 'Agenda Profissionais' },
-  { to: '/whatsapp',      icon: MessageSquare,   label: 'Comunicação WhatsApp' },
-  { to: '/assistente',    icon: Bot,             label: 'Assistente IA',  badge: 'Novo' },
-  { to: '/configuracoes', icon: Settings,        label: 'Configurações'   },
+  { to: '/dashboard',     icon: LayoutDashboard, label: 'Sala de Situação'              },
+  { to: '/fila',          icon: ListOrdered,     label: 'Fila de Regulação'             },
+  { to: '/maquinas',      icon: Monitor,         label: 'Capacidade Assistencial'       },
+  { to: '/analise',       icon: BarChart2,       label: 'Análise de Desempenho'         },
+  { to: '/notificacoes',  icon: Bell,            label: 'Gestão da Fila — Pacientes'   },
+  { to: '/profissionais', icon: Stethoscope,     label: 'Gestão da Fila — Profissionais'},
+  { to: '/whatsapp',      icon: MessageSquare,   label: 'Comunicação com Paciente'      },
+  { to: '/assistente',    icon: Bot,             label: 'Assistente de Regulação', badge: 'Novo' },
+  { to: '/configuracoes', icon: Settings,        label: 'Configurações'                 },
 ]
 
 function useVagasEmRiscoCount() {
@@ -115,8 +115,9 @@ export default function Layout() {
     <div className="flex h-screen bg-gray-50">
       <aside className="w-60 bg-blue-900 text-white flex flex-col">
         <div className="px-6 py-5 border-b border-blue-800">
-          <p className="text-xs text-blue-300 font-medium uppercase tracking-wider">SUS Montes Claros</p>
-          <h1 className="text-base font-semibold mt-0.5">Gestão de Raio-X</h1>
+          <h1 className="text-base font-bold">SUSágil</h1>
+          <p className="text-xs text-blue-300 font-medium uppercase tracking-wider mt-0.5">Montes Claros</p>
+          <p className="text-xs text-blue-400 mt-0.5">Gestão de Filas e Regulação</p>
         </div>
         <nav className="flex-1 px-3 py-4 space-y-1">
           {nav.map(({ to, icon: Icon, label }) => (

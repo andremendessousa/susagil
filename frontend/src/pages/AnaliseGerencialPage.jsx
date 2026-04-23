@@ -261,7 +261,7 @@ export default function AnaliseGerencialPage() {
       {/* ── Header ────────────────────────────────────────────────────────── */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold text-gray-900">Análise Gerencial</h1>
+          <h1 className="text-xl font-semibold text-gray-900">Análise de Desempenho</h1>
           <p className="text-sm text-gray-500 mt-0.5">Identifique causas e tome ação</p>
         </div>
         <div className="flex rounded-lg overflow-hidden border border-gray-200 bg-white">

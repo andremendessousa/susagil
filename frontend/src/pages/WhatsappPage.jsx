@@ -42,8 +42,8 @@ function mascaraCNS(cns) {
 
 // ─── Templates institucionais GovTech ────────────────────────────────────────
 
-const INST_HEADER = '[Assistente Virtual - Saúde Montes Claros]'
-const INST_FOOTER = '_Secretaria Municipal de Saúde — Montes Claros/MG_'
+const INST_HEADER = '[Secretaria Municipal de Saúde — Montes Claros/MG]'
+const INST_FOOTER = 'Secretaria Municipal de Saúde — Montes Claros/MG\nEsta mensagem é oficial. Seus dados são tratados conforme a LGPD (Lei 13.709/2018).'
 
 // Gera texto da mensagem do sistema a partir do notification_log
 function gerarMensagemSistema(notif) {

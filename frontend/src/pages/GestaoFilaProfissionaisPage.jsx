@@ -494,9 +494,9 @@ export default function GestaoFilaProfissionaisPage() {
         {/* Cabeçalho */}
         <div className="flex items-start justify-between gap-4">
           <div>
-            <h1 className="text-xl font-semibold text-gray-900">Gestão de Agenda — Profissionais</h1>
+            <h1 className="text-xl font-semibold text-gray-900">Gestão da Fila — Profissionais</h1>
             <p className="text-sm text-gray-500 mt-0.5">
-              Comunicação com médicos, técnicos e clínicas parceiras — confirmação de disponibilidade 72h / 48h / 24h
+              Confirmação de agenda e disponibilidade da rede prestadora
             </p>
           </div>
           {board1.length > 0 && (

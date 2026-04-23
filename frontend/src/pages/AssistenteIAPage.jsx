@@ -898,7 +898,7 @@ Analise estes dados e responda a pergunta do gestor em linguagem natural.`
                 IA
               </span>
             </div>
-            <p className="text-xs text-gray-400">Análise de dados em tempo real · Claude Sonnet</p>
+            <p className="text-xs text-gray-400">Análise de dados em tempo real com inteligência artificial</p>
           </div>
         </div>
         <div className="ml-auto flex items-center gap-2">

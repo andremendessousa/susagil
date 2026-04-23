@@ -63,9 +63,9 @@ export default function FilaPage() {
       )}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-semibold text-gray-900">Fila de Exames</h1>
+          <h1 className="text-xl font-semibold text-gray-900">Fila de Regulação</h1>
           <p className="text-sm text-gray-500 mt-0.5">
-            {loading ? 'Carregando...' : `${entries.length} pacientes · Raio-X convencional`}
+            {loading ? 'Carregando...' : `${entries.length} pacientes · Exames de imagem e consultas especializadas`}
           </p>
         </div>
         <button className="btn-primary" onClick={() => setModalOpen(true)}>+ Novo encaminhamento</button>

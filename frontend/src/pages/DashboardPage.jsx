@@ -305,7 +305,7 @@ export default function DashboardPage() {
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div>
           <h1 className="text-xl font-semibold text-gray-900">
-            Sala de Situação — Regulação de Imagem
+            Sala de Situação — Regulação Assistencial
           </h1>
           <p className="text-sm text-gray-400 mt-0.5 capitalize">{dataAgora} · {horaAgora}</p>
         </div>

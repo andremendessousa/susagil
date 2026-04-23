@@ -544,9 +544,9 @@ export default function NotificacoesPage() {
         {/* Cabeçalho */}
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-xl font-semibold text-gray-900">Notificações</h1>
+            <h1 className="text-xl font-semibold text-gray-900">Gestão da Fila — Pacientes</h1>
             <p className="text-sm text-gray-500 mt-0.5">
-              Comunicação com pacientes via WhatsApp — janela de {horasConfig}h
+              Comunicação escalonada e qualificação da demanda
             </p>
           </div>
           {naoNotificados.length > 0 && (

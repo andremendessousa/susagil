@@ -62,9 +62,9 @@ export default function MaquinasPage() {
       {/* ── Header ────────────────────────────────────────────────────────── */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold text-gray-900">Equipamentos</h1>
+          <h1 className="text-xl font-semibold text-gray-900">Capacidade Assistencial</h1>
           <p className="text-sm text-gray-500 mt-0.5">
-            Ocupação dos aparelhos nos últimos {horizonte} dias
+            Equipamentos, profissionais e recursos da rede
           </p>
         </div>
         <div className="flex rounded-lg overflow-hidden border border-gray-200 bg-white">
